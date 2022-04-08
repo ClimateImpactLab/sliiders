@@ -1,0 +1,3 @@
+[submodule "LocalizeSL"]
+	path = LocalizeSL
+	url = git@github.com:bobkopp/LocalizeSL.git
