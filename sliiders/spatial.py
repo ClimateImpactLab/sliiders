@@ -2330,10 +2330,9 @@ def coastlen_poly(
             line = lines_int.iloc[idx0]
 
             if line.geometry.type == "MultiLineString":
-                lines = line.geometry.explode()
-                for idx1 in range(len(lines)):
-                    line = lines.iloc[idx1]
-                    lensum += line_dist(line)
+                lensum += sum(
+                    [line_dist(this_line) for this_line in line.geometry.geoms]
+                )
             else:
                 lensum += line_dist(line.geometry)
 
