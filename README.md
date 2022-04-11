@@ -1,8 +1,8 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.6426191.svg)](https://doi.org/10.5281/zenodo.6426191)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.6449231.svg)](https://doi.org/10.5281/zenodo.6449231)
 
 # Sea Level Impacts Input Dataset by Elevation, Region, and Scenario (SLIIDERS)
 
-This repository hosts the code used to create the [SLIIDERS-ECON and SLIIDERS-SLR](https://doi.org/10.5281/zenodo.6426191) datasets. The SLIIDERS datasets contain current and forecasted physical and socioeconomic metrics from 2000-2100 - organized by coastal segment, elevation slice, and scenario - for use as inputs to global coastal climate impacts research.
+This repository hosts the code used to create the [SLIIDERS-ECON and SLIIDERS-SLR](https://doi.org/10.5281/zenodo.6449231) datasets. The SLIIDERS datasets contain current and forecasted physical and socioeconomic metrics from 2000-2100 - organized by coastal segment, elevation slice, and scenario - for use as inputs to global coastal climate impacts research.
 
 **SLIIDERS-ECON** contains socioeconomic variables, varying horizontally and vertically over space. **SLIIDERS-SLR** contains Monte Carlo projections of Local Sea Level Rise under different emissions and ice sheet dynamics assumptions, based on the outputs of [LocalizeSL](https://github.com/bobkopp/LocalizeSL). Coastal segments in SLIIDERS-ECON can be matched to gridded LSLR projections in SLIIDERS-SLR via the `SLR_site` key.
 
