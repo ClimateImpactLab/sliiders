@@ -1,7 +1,9 @@
 History
 =======
 
-.. v1.0.0:
+unreleased
+----------
+* Remove placeholder file
 
 v1.0.2
 ------
