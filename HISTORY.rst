@@ -1,9 +1,9 @@
 History
 =======
 
-unreleased
+v1.1.0
 ----------
-* Remove placeholder file
+* Updates consistent with revisions to Depsky et al. 2023
 
 v1.0.2
 ------

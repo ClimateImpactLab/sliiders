@@ -1,6 +1,5 @@
 import random
 import warnings
-import zipfile
 from collections import defaultdict
 from operator import itemgetter
 from typing import Any, Sequence, Union
@@ -11,12 +10,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import pygeos
-import regionmask
-import rioxarray
 import shapely as shp
 import xarray as xr
-from dask_gateway import Gateway
-from IPython.display import display
 from numba import jit
 from pyinterp.backends.xarray import Grid2D
 from scipy.spatial import SphericalVoronoi, cKDTree
@@ -30,142 +25,40 @@ from shapely.geometry import (
     box,
 )
 from shapely.ops import linemerge, unary_union
+from sklearn.neighbors import BallTree
 from tqdm.notebook import tqdm
 
-from . import settings as sset
-from .io import load_adm0_shpfiles
+# `threshold` parameter of SphericalVoronoi() (not sure it can go any lower)
+SPHERICAL_VORONOI_THRESHOLD = 1e-7
 
-assert sset.MARGIN_DIST < sset.DENSIFY_TOLERANCE
-assert 10 ** (-sset.ROUND_INPUT_POINTS) < sset.MARGIN_DIST
-
-SPHERICAL_VORONOI_THRESHOLD = (
-    1e-7  # `threshold` parameter of SphericalVoronoi() (not sure it can go any lower)
-)
 LAT_TO_M = 111131.745
 EARTH_RADIUS = 6371.009
 
+# Width, in degrees, of squares in which to divide the shapes of administrative regions.
+# The smaller shapes are more manageable and computationally efficient in many
+# geometry-processing algorithms
+DEFAULT_BOX_SIZE = 1.0
 
-def iso_poly_box_getter(iso, shp_df):
-    """Get `box`es or rectangular areas of coordinates that contains each Polygon
-    belonging to the shapefile of the country specified by the ISO code.
+DENSIFY_TOLERANCE = 0.01
+MARGIN_DIST = 0.001
+ROUND_INPUT_POINTS = 6
+SMALLEST_INTERIOR_RING = 1e-13
 
-    Parameters
-    ----------
-    iso : str
-        ISO code of the country that we are interested in
-    shp_df : geopandas DataFrame
-        with the indices being the iso codes and with a column called `geometry`
-        containing the shapefile of the relevant countries
-
-    Returns
-    -------
-    list of tuples (of length four)
-        containing the smallest and largest x and y coordinates (longitudes and
-        latitudes)
-
-    """
-    shp = shp_df.loc[iso, "geometry"]
-    if type(shp) == MultiPolygon:
-        shps = shp.geoms
-    else:
-        shps = [shp]
-
-    poly_bounds = []
-    for poly in shps:
-        xx = np.array(poly.exterior.coords.xy[0])
-        yy = np.array(poly.exterior.coords.xy[1])
-        xmin, xmax = np.floor(xx.min()), np.ceil(xx.max())
-        ymin, ymax = np.floor(yy.min()), np.ceil(yy.max())
-        poly_bounds.append((xmin, xmax, ymin, ymax))
-
-    return list(set(poly_bounds))
-
-
-def get_iso_geometry(iso=""):
-    """For a given list of ISO 3166-1 alpha-3 codes (or a single code), returns
-    corresponding Natural Earth shapefile geometries. Note that some ISO codes are
-    recorded differently under Natural Earth (e.g., Aland Island is originally `ALA`
-    but recorded as `ALD`), so such cases are fixed when encountered.
-
-    Parameters
-    ----------
-    iso : str or list of str
-        three-letter ISO 3166-1 alpha-3 code, or list of such codes, referencing a
-        geographic region in the Natural Earth shapefiles
-
-    Returns
-    -------
-    :py:class:`shapely.geometry` or list of :py:class:`shapely.geometry`
-    """
-    input_is_list = isinstance(iso, (list, np.ndarray))
-
-    if input_is_list:
-        isos = list(iso)
-    else:
-        isos = [iso]
-
-    shp_dict = load_adm0_shpfiles(
-        ["countries", "map_units", "map_subunits", "disputed_areas"]
-    )
-    country_shps = shp_dict["countries"]
-    map_unit_shps = shp_dict["map_units"]
-    map_subunit_shps = shp_dict["map_subunits"]
-    disputed_area_shps = shp_dict["disputed_areas"]
-
-    for i in range(len(isos)):
-        # cw between iso codes --
-        if isos[i] == "ALA":
-            isos[i] = "ALD"
-        if isos[i] == "ESH":
-            isos[i] = "SAH"
-        if isos[i] == "PSE":
-            isos[i] = "PSX"
-        if isos[i] == "SJM":
-            isos[i] = "NSV"
-        if isos[i] == "SSD":
-            isos[i] = "SDS"
-        if isos[i] == "XKX":
-            isos[i] = "KOS"
-        if isos[i] == "BES":
-            isos[i] = "NLY"
-
-    geos = []
-    for iso in isos:
-        if iso == "SAH":
-            geo = disputed_area_shps[
-                disputed_area_shps["NAME_EN"] == "Western Sahara"
-            ].geometry.unary_union
-        else:
-            # retrieve shape file
-            try:
-                geo = country_shps[
-                    country_shps["ADM0_A3"] == iso.upper()
-                ].geometry.iloc[0]
-                if iso == "MAR":
-                    geo = geo.difference(
-                        disputed_area_shps[
-                            disputed_area_shps["NAME_EN"] == "Western Sahara"
-                        ].geometry.unary_union
-                    )
-            except IndexError:
-                try:
-                    geo = map_unit_shps[
-                        map_unit_shps["GU_A3"] == iso.upper()
-                    ].geometry.iloc[0]
-                except IndexError:
-                    geo = map_subunit_shps[
-                        map_subunit_shps["SU_A3"] == iso.upper()
-                    ].geometry.iloc[0]
-        geos.append(geo)
-
-    if input_is_list:
-        return geos
-    return geos[0]
+assert MARGIN_DIST < DENSIFY_TOLERANCE
+assert 10 ** (-ROUND_INPUT_POINTS) < MARGIN_DIST
 
 
 def filter_spatial_warnings():
-    """Suppress warnings defined in `sliiders.settings.SPATIAL_WARNINGS_TO_IGNORE`"""
-    for msg in sset.SPATIAL_WARNINGS_TO_IGNORE:
+    """Suppress warnings that aren't an issue for current implementation."""
+    for msg in [
+        "CRS mismatch between the CRS",
+        "Geometry is in a geographic CRS",
+        "initial implementation of Parquet.",
+        "Iteration over",
+        "__len__ for multi-part geometries",
+        "The array interface is deprecated",
+        "Only Polygon objects have interior rings",
+    ]:
         warnings.filterwarnings("ignore", message=f".*{msg}*")
 
 
@@ -321,12 +214,12 @@ def strip_line_interiors_poly(g):
     -------
     shapely.Polygon
         A Shapely Polygon equivalent to `g`, removing any interior Polygons
-        smaller than or equal to `sliiders.spatial.SMALLEST_INTERIOR_RING`,
+        smaller than or equal to :py:data:`SMALLEST_INTERIOR_RING`,
         measured in "square degrees".
     """
     return Polygon(
         g.exterior,
-        [i for i in g.interiors if Polygon(i).area > sset.SMALLEST_INTERIOR_RING],
+        [i for i in g.interiors if Polygon(i).area > SMALLEST_INTERIOR_RING],
     )
 
 
@@ -433,14 +326,13 @@ def fill_in_gaps(gser):
         )
 
     assert current_coverage.area == 0
+    assert intersects_missing.is_valid.all()
 
     out = gser[~intersects_missing_mask].copy()
 
     out = pd.concat(
         [out, intersects_missing.geometry],
     ).rename(out.name)
-
-    assert intersects_missing.is_valid.all()
 
     return out
 
@@ -497,7 +389,7 @@ def get_polys_in_box(all_polys, lx, ly, ux, uy):
 
 def grid_gdf(
     orig_gdf,
-    box_size=sset.DEFAULT_BOX_SIZE,
+    box_size=DEFAULT_BOX_SIZE,
     show_bar=True,
 ):
     """Divide a GeoDataFrame into a grid, returning the gridded shape-parts and
@@ -591,8 +483,8 @@ def divide_pts_into_categories(
     pts,
     pt_gadm_ids,
     all_oc,
-    tolerance=sset.DENSIFY_TOLERANCE,
-    at_blank_tolerance=sset.MARGIN_DIST,
+    tolerance=DENSIFY_TOLERANCE,
+    at_blank_tolerance=MARGIN_DIST,
 ):
     """From a set of points and IDs, divide points into "coastal-coastal" and
     "coastal-border" categories.
@@ -719,7 +611,7 @@ def simplify_nonborder(
     coastal_border_pts,
     coastal_coastal_gadm,
     coastal_border_gadm,
-    tolerance=sset.MARGIN_DIST,
+    tolerance=MARGIN_DIST,
 ):
     """Simplify coastal Voronoi generator points that are not near the border
     of another administrative region.
@@ -802,7 +694,7 @@ def simplify_nonborder(
     return non_border, non_border_gadm, now_border, now_border_gadm
 
 
-def explode_gdf_to_pts(geo_array, id_array, rounding_decimals=sset.ROUND_INPUT_POINTS):
+def explode_gdf_to_pts(geo_array, id_array, rounding_decimals=ROUND_INPUT_POINTS):
     """Transform an array of shapes into an array of coordinate pairs, keeping
     the IDs of shapes aligned with the coordinates.
 
@@ -836,7 +728,7 @@ def explode_gdf_to_pts(geo_array, id_array, rounding_decimals=sset.ROUND_INPUT_P
     return pts, pt_ids
 
 
-def polys_to_vor_pts(regions, all_oc, tolerance=sset.DENSIFY_TOLERANCE):
+def polys_to_vor_pts(regions, all_oc, tolerance=DENSIFY_TOLERANCE):
     """Create a set of Voronoi region generator points from a set of shapes.
 
     Parameters
@@ -861,7 +753,7 @@ def polys_to_vor_pts(regions, all_oc, tolerance=sset.DENSIFY_TOLERANCE):
 
     pts, pt_gadm_ids = explode_gdf_to_pts(densified, regions.index.values)
 
-    all_oc_densified = pygeos.segmentize(all_oc, sset.MARGIN_DIST)
+    all_oc_densified = pygeos.segmentize(all_oc, MARGIN_DIST)
 
     (
         coastal_coastal_pts,
@@ -875,7 +767,7 @@ def polys_to_vor_pts(regions, all_oc, tolerance=sset.DENSIFY_TOLERANCE):
         coastal_border_pts,
         coastal_coastal_gadm,
         coastal_border_gadm,
-        tolerance=sset.MARGIN_DIST,
+        tolerance=MARGIN_DIST,
     )
 
     vor_pts = np.concatenate([non_border, now_border, coastal_border_pts])
@@ -889,29 +781,6 @@ def polys_to_vor_pts(regions, all_oc, tolerance=sset.DENSIFY_TOLERANCE):
             crs=regions.crs,
         )
     )
-
-
-def get_hemisphere_shape(hemisphere):
-    """Define Shapely boxes for each hemisphere and the globe.
-
-    Parameters
-    ----------
-    hemisphere : str
-        Options are "west", "east", and "both".
-
-    Returns
-    -------
-    shapely.Polygon
-        A single box corresponding to the requested hemisphere(s).
-    """
-    if hemisphere == "west":
-        return box(-180, -90, 0, 90)
-    elif hemisphere == "east":
-        return box(0, -90, 180, 90)
-    elif hemisphere == "both":
-        return box(-180, -90, 180, 90)
-    else:
-        raise ValueError
 
 
 def make_valid_shapely(g):
@@ -929,50 +798,6 @@ def make_valid_shapely(g):
         List of Shapely geometries, after calling `pygeos.make_valid()` on all.
     """
     return pygeos.to_shapely(pygeos.make_valid(pygeos.from_shapely(g)))
-
-
-def clip_geoseries_by_rect(gs, rect):
-    """Wrapper to mask a geopandas.GeoSeries by a Shapely rectangle.
-    Should be deprecated upon release of Shapely 2.0.
-
-    Parameters
-    ----------
-    gs : geopandas.GeoSeries
-        Any Geopandas GeoSeries
-
-    rect : shapely.Polygon
-        A Shapely rectangle
-
-    Returns
-    -------
-    geopandas.GeoSeries
-        A GeoSeries equivalent to `gs`, bound by `rect`.
-    """
-    try:
-        return gpd.GeoSeries(pygeos.clip_by_rect(pygeos.from_shapely(gs), *rect.bounds))
-    except Exception:  # weird issue with CYM, clip_by_rect doesn't work
-        return gs.apply(lambda g: g.intersection(rect))
-
-
-def diff_geoseries(gs1, gs2):
-    """Wrapper to get the spatial difference between two GeoSeries.
-
-    Parameters
-    ----------
-    gs1 : geopandas.GeoSeries
-        Any GeoSeries
-
-    gs2 : geopandas.GeoSeries
-        Any GeoSeries
-
-    Returns
-    -------
-    geopandas.GeoSeries
-        The spatial difference between `gs1` and `gs2` (i.e. `gs1` - `gs2`)
-    """
-    return gpd.GeoSeries(
-        pygeos.difference(pygeos.from_shapely(gs1), pygeos.from_shapely(gs2))
-    )
 
 
 @jit(nopython=True, parallel=False)
@@ -1923,17 +1748,13 @@ def get_voronoi_regions(full_regions):
         full_regions.geometry.explode(index_parts=False)
     )
 
-    # This has been tested with up to 40 million coordinates, so cannot
-    # guarantee performance or memory usage on more complex shapefiles
-    assert (
-        pygeos.count_coordinates(pygeos.from_shapely(region_polys.geometry.values))
-        < sset.MAX_VORONOI_COMPLEXITY
-    )
-
+    print("...Subdividing region grid to ease computation")
     gridded_gdf, all_oc = grid_gdf(region_polys)
 
+    print("...Creating Voronoi generator points")
     pts = polys_to_vor_pts(region_polys, all_oc)
 
+    print("...Creating Voronoi diagram from generator points")
     vor_gdf = get_spherical_voronoi_gser(pts).to_frame()
 
     vor_shapes = pygeos.from_shapely(vor_gdf["geometry"])
@@ -1946,6 +1767,7 @@ def get_voronoi_regions(full_regions):
     gridded_uid = np.take(gridded_gdf.index.values, existing)
     vor_uid = np.take(vor_gdf.index.values, vor_ix)
 
+    print("...Revmoving already attributed land from voronoi")
     vor_gdf["calculated"] = remove_already_attributed_land_from_vor(
         vor_shapes,
         all_gridded,
@@ -1956,6 +1778,7 @@ def get_voronoi_regions(full_regions):
         crs=full_regions.crs,
     ).values
 
+    print("...stitching Voronoi with already attributed land")
     full_regions = full_regions.join(vor_gdf.drop(columns="geometry"), how="left")
 
     full_regions["calculated"] = full_regions["calculated"].fillna(Polygon())
@@ -1966,14 +1789,15 @@ def get_voronoi_regions(full_regions):
 
     out = full_regions[full_regions.index.notnull()].combined.rename("geometry")
 
+    print("...cleaning Voronois")
     out = out.apply(grab_polygons)
     out = out.apply(strip_line_interiors)
-
     out = fill_in_gaps(out)
+
     return gpd.GeoDataFrame(full_regions[out_cols].join(out, how="right"))
 
 
-def get_points_along_segments(segments, tolerance=sset.DENSIFY_TOLERANCE):
+def get_points_along_segments(segments, tolerance=DENSIFY_TOLERANCE):
     """Get a set of points along line segments. Calls `pygeos.segmentize()`
     to interpolate between endpoints of each line segment.
 
@@ -2253,7 +2077,7 @@ def great_circle_dist(
     return 2 * np.arcsin(np.sqrt(hav)) * radius
 
 
-def get_great_circle_nearest_index(df1, df2, x1="lon", y1="lat", x2="lon", y2="lat"):
+def spherical_nearest_neighbor(df1, df2, x1="lon", y1="lat", x2="lon", y2="lat"):
     """
     Finds the index in df2 of the nearest point to each element in df1
 
@@ -2262,7 +2086,7 @@ def get_great_circle_nearest_index(df1, df2, x1="lon", y1="lat", x2="lon", y2="l
     df1 : pandas.DataFrame
         Points that will be assigned great circle nearest neighbors from df2
     df2 : pandas.DataFrame
-        Location of points to within which to select data
+        Location of points within which to select data
     x1 : str
         Name of x column in df1
     y1 : str
@@ -2278,14 +2102,9 @@ def get_great_circle_nearest_index(df1, df2, x1="lon", y1="lat", x2="lon", y2="l
         :py:class:`pandas.Series` of indices in df2 for the nearest entries to
         each row in df1, indexed by df1's index.
     """
-
-    dists = great_circle_dist(
-        df1[[x1]].values, df1[[y1]].values, df2[x2].values, df2[y2].values
-    )
-
-    nearest_indices = pd.Series(df2.index.values[dists.argmin(axis=1)], index=df1.index)
-
-    return nearest_indices
+    ball = BallTree(np.deg2rad(df2[[y2, x2]]), metric="haversine")
+    _, ixs = ball.query(np.deg2rad(df1[[y1, x1]]))
+    return pd.Series(df2.index[ixs[:, 0]].values, index=df1.index)
 
 
 def coastlen_poly(
@@ -2293,17 +2112,17 @@ def coastlen_poly(
     coastlines_shp_path,
     seg_adm_voronoi_parquet_path,
     seg_var="seg_adm",
-    filesystem=None,
+    **parquet_kwargs,
 ):
     lensum = 0
 
     # Import coastlines, CIAM seg and ADM1 voronoi polygons
-    clines = gpd.read_file(coastlines_shp_path)
+    clines = gpd.read_parquet(coastlines_shp_path)
     poly = gpd.read_parquet(
         seg_adm_voronoi_parquet_path,
-        filesystem=filesystem,
         columns=["geometry"],
         filters=[(seg_var, "=", i)],
+        **parquet_kwargs,
     )
 
     assert len(poly) == 1
@@ -2510,6 +2329,9 @@ def get_coastal_segments_by_ciam_site(site_vor, coastlines, plot=True):
     # Merge LineStrings where possible
     coastal_segs["geometry"] = coastal_segs["geometry"].apply(grab_lines)
 
+    # drop any seg centroids whose Voronoi polygon did not overlap any coastlines
+    coastal_segs = coastal_segs[~coastal_segs.is_empty]
+
     # Check output
     if plot:
         coastal_segs.plot(color=add_rand_color(coastal_segs, "ISO"), figsize=(20, 20))
@@ -2517,48 +2339,14 @@ def get_coastal_segments_by_ciam_site(site_vor, coastlines, plot=True):
     return coastal_segs
 
 
-def dist_matrix(
-    ax: Any, ay: Any, bx: Any, by: Any, radius: float = EARTH_RADIUS
-) -> Any:
-    """Get the distance matrix (in km) between two sets of points defined by lat/lon.
-
-    Parameters
-    ----------
-    ax, bx : 1-d array-like
-        Longitudes of the two point sets
-    ay, by : 1-d array-like
-        Latitudes of the two point sets
-
-    Returns
-    -------
-    :class:`numpy.ndarray`
-        The distance distance matrix between the two point sets.
-
-    Example
-    -------
-    >>> lon1 = np.array([0, 90, 270])
-    >>> lat1 = np.array([-45, 0, -60])
-    >>> lon2 = np.array([10, 100])
-    >>> lat2 = np.array([-45, 10])
-
-    >>> dist_matrix(lon1, lat1, lon2, lat2)
-    array([[  785.76833086, 11576.03341028],
-           [ 9223.29614889,  1568.52277257],
-           [ 6289.84215841, 14393.39737057]])
-    """
-
-    # broadcast manually
-    ax1 = ax[:, np.newaxis].repeat(bx.shape[0], axis=1)
-    ay1 = ay[:, np.newaxis].repeat(by.shape[0], axis=1)
-    bx1 = bx[np.newaxis, :].repeat(ax.shape[0], axis=0)
-    by1 = by[np.newaxis, :].repeat(ay.shape[0], axis=0)
-
-    # get dist
-    return great_circle_dist(ax1, ay1, bx1, by1)
-
-
 def create_overlay_voronois(
-    regions, seg_centroids, coastlines, overlay_name, plot=False
+    regions,
+    seg_centroids,
+    coastlines,
+    ocean_shape,
+    overlay_name,
+    plot=False,
+    min_sq_degrees=3600 ** (-2),
 ):
     """Create two Voronoi objects necessary for assigning values to coastal segments in
     SLIIDERS.
@@ -2574,26 +2362,32 @@ def create_overlay_voronois(
         centroids.
     coastlines : :py:class:`geopandas.GeoSeries`
         Contains LineStrings representing global coastlines. The index is not important.
+    ocean_shape : :py:class:`shapely.geometry.polygon.Polygon`
+        Shape defining the ocean. Used to confirm that every coastal ISO has at least
+        one segment centroid.
     overlay_name : str
         What you would like the variable representing each combination of segment and
         region to be called
     plot : bool
         Whether to produce some diagnostic plots during calculation. Only valuable if
         running in an interactive setting.
+    min_sq_degrees : float, default 1 / 3600 ** 2
+        Minimum area (in "square degrees") allowed for each component geometry of
+        each MultiPolygon for the two output GeoDataFrames. Higher numbers remove more
+        "slivers" caused by slight mismatches in datasets, but may remove more "true"
+        small geometries. Default is set to the size of a 1 arc-second grid cell.
 
     Returns
     -------
     all_overlays : :py:class:`geopandas.GeoDataFrame`
         GeoDataFrame representing Voronoi shapes, as administrative Voronoi
         regions intersected with segment-based Voronoi regions.
-
-    ciam_polys : :py:class:`geopandas.GeoDataFrame`
-        GeoDataFrame representing segment-based Voronoi regions.
+    adm0 : :py:class:`geopandas.GeoDataFrame`
+        GeoDataFrame representing country Voronoi diagram
     """
     # Generate global Voronoi shapes for regions
     print("Generating global Voronoi shapes for regions...")
     reg_vor = get_voronoi_regions(regions)
-    reg_vor["ISO"] = regions.ISO
     adm0 = reg_vor.dissolve("ISO")
 
     # Assign ISO to seg centroids based on country Voronoi
@@ -2604,6 +2398,18 @@ def create_overlay_voronois(
         .sjoin(adm0, how="left", predicate="within")
         .rename(columns={"index_right": adm0.index.name})
     )
+
+    # Check for any coastal ISO's that have not been assigned any segments. This is a
+    # problem as they get treated as inland ISOs
+    simple_ocean_shape = ocean_shape.buffer(0.1)
+    coastal_adm0 = adm0.index[adm0.intersects(simple_ocean_shape)]
+    missing = coastal_adm0.difference(stations["ISO"].unique())
+
+    if len(missing):
+        raise ValueError(
+            "The following coastal countries have no segment centroid assigned to "
+            f"them: {missing.tolist()}"
+        )
 
     # Generate ISO-level point-voronoi from CIAM points
     print("Generating within-country Voronoi shapes for segment centroids...")
@@ -2621,11 +2427,25 @@ def create_overlay_voronois(
 
     # Overlap coastline vor with region vor to get spatially comprehensive seg_reg.
     print("Creating segment X region Voronoi shapes...")
-    return generate_voronoi_from_segments(
+    out = generate_voronoi_from_segments(
         coastal_segs,
         reg_vor,
         overlay_name,
     )
+
+    # drop sliver geometries
+    print("Removing sliver geometries...")
+    out = _drop_tiny(out, min_sq_degrees, overlay_name)
+    adm0 = _drop_tiny(adm0, min_sq_degrees, "ISO")
+
+    return out, adm0
+
+
+def _drop_tiny(df, min_sq_degrees, colname):
+    """Drop voronoi regions that are smaller than our smallest input raster grid cell
+    (1 arc-second)"""
+    exploded = df.sort_index().explode()
+    return exploded[exploded.area > min_sq_degrees].dissolve(colname)
 
 
 def get_country_level_voronoi_gdf(all_pts_df):
@@ -2820,485 +2640,6 @@ def get_tile_names(df, lon_col, lat_col):
     )
 
 
-def get_all_exp_tiles(lon, lat):
-    """
-    Get the list of CoastalDEM tiles included in an exposure dataset.
-
-    Parameters
-    ----------
-    lon, lat : array-like
-        Defines the longitude and latitude of valid grid cells in an exposure dataset
-
-    Returns
-    -------
-    :py:class:`numpy.ndarray`
-        1D array of unique 1-degree tile names
-
-    """
-    exp = pd.DataFrame(
-        np.floor(
-            grid_ix_to_val(
-                np.stack((lon, lat)).T,
-                cell_size=sset.LITPOP_GRID_WIDTH,
-                lon_mask=[True, False],
-            )
-        ).astype(int),
-        columns=["lon", "lat"],
-    )
-
-    lonlats = exp.drop_duplicates(["lon", "lat"]).reset_index(drop=True)
-
-    lonlats["londir"] = np.where(lonlats["lon"] < 0, "W", "E")
-    lonlats["latdir"] = np.where(lonlats["lat"] < 0, "S", "N")
-
-    lonlats["lonnum"] = np.abs(lonlats["lon"]).astype(int).astype(str).str.zfill(3)
-    lonlats["latnum"] = np.abs(lonlats["lat"]).astype(int).astype(str).str.zfill(2)
-
-    lonlats["tile_name"] = (
-        lonlats["latdir"] + lonlats["latnum"] + lonlats["londir"] + lonlats["lonnum"]
-    )
-
-    return lonlats["tile_name"].values
-
-
-def get_bbox(tile_name):
-    """
-    Return bounding box from tile name in the string format "VXXHYYY"
-    representing the southwestern corner of a 1-degree tile, where "V" is "N"
-    (north) or "S" (south), "H" is "E" (east) or "W" (west), "XX" is a
-    two-digit zero-padded number indicating the number of degrees north or
-    south from 0,0, and "YYY" is a three-digit zero-padded number indicating
-    the number of degrees east or west from 0,0.
-
-    Parameters
-    ----------
-    tile_name : str
-        Tile name in the format described above
-
-    Returns
-    -------
-    shapely.Polygon
-        A box representing the spatial coverage of the tile
-    """
-    lat_term, lon_term = tile_name[:3], tile_name[3:]
-
-    lat_direction, lat_value = lat_term[0], int(lat_term[1:])
-    lon_direction, lon_value = lon_term[0], int(lon_term[1:])
-
-    lat_sign = 1 if lat_direction == "N" else -1
-    lon_sign = 1 if lon_direction == "E" else -1
-
-    llat = lat_sign * lat_value
-    llon = lon_sign * lon_value
-
-    ulat = llat + 1
-    ulon = llon + 1
-
-    return box(llon, llat, ulon, ulat)
-
-
-def get_partial_covering_matches(elev_tile, bbox, gdf, id_name=None):
-    """
-    Get shapes in `gdf` that overlap with `bbox`, as flattened array corresponding
-    to the indices of `elev_tile`
-
-    Parameters
-    ----------
-    elev_tile : xarray.DataArray
-        Elevation raster tile
-
-    bbox : shapely.Polygon
-        Bounding box of `elev_tile`
-
-    gdf : geopandas.GeoDataFrame
-        GeoDataFrame containing geometries to match to `elev_tile` coordinates
-
-    id_name : str
-        Field of `gdf` to use as IDs in returned `region_matches`
-
-    Returns
-    -------
-    region_matches : np.ndarray
-        1D array of matches between `elev_tile` and `gdf`. Represented as a
-        flattened array along coordinates of `elev_tile`. If `id_name` is None,
-        returns flag indicating there is some match. If `id_name` is defined,
-        returns ID of the match, or -1 if there's no match.
-    """
-    gdf = gdf[gdf["geometry"].intersects(bbox)].copy()
-
-    gdf["geometry"] = gdf["geometry"].intersection(bbox)
-    gdf = gdf[gdf["geometry"].area > 0].copy()
-
-    if len(gdf) == 0:
-        res = np.zeros(elev_tile.size, dtype=int)
-        if id_name is None:
-            return res
-        return res - 1
-
-    gdf = gdf.reset_index(drop=True)
-
-    regions = regionmask.from_geopandas(gdf, names=id_name, name="regions")
-
-    mask = regions.mask(elev_tile.x.values, elev_tile.y.values)
-
-    if id_name is None:
-        mask = ~np.isnan(mask)
-
-    mask_df = mask.astype(bool if id_name is None else int)
-
-    mask_df = mask_df.to_pandas().stack().reset_index().rename(columns={0: "region_id"})
-
-    if id_name is None:
-        return mask_df["region_id"].to_numpy()
-
-    mask_df.loc[mask_df["region_id"] < 0, "region_id"] = len(regions.names)
-
-    region_matches = np.take(
-        np.array(regions.names + [-1]), np.array(mask_df["region_id"])
-    )
-
-    return region_matches
-
-
-def get_vor_matches(elev_tile, bbox, regions_df, id_name, out_name, assert_filled=True):
-    """For each pixel of `elev_tile`, assign the corresponding shape in
-    `regions_df`.
-
-    Parameters
-    ----------
-    elev_tile : xarray.DataArray
-        Elevation raster tile
-
-    bbox : shapely.Polygon
-        Bounding box of `elev_tile`
-
-    regions_df : geopandas.GeoDataFrame
-        GeoDataFrame containing geometries to match to `elev_tile` coordinates
-
-    id_name : str
-        Field of `regions_df` to use as IDs in returned array
-
-    out_name : str
-        Name to use for `id_name` field in output
-
-    assert_filled : bool
-        Whether to assert that regions are defined over the entire `elev_tile`
-
-    Returns
-    -------
-    pandas.Series
-        Array of matches between `elev_tile` and `regions_df`, defined by the field
-        `id_name` in `regions_df`.
-
-    """
-    regions = regionmask.from_geopandas(regions_df, names=id_name, name=out_name)
-
-    mask = regions.mask(elev_tile.x.values, elev_tile.y.values, wrap_lon=False)
-
-    # if there are pixels without shapes, buffer shapes
-    assert mask.isnull().sum().item() == 0
-    mask_df = (
-        mask.astype(int)
-        .to_pandas()
-        .stack()
-        .reset_index()
-        .rename(columns={0: "region_ix"})
-    )
-
-    if assert_filled:
-        assert (mask_df["region_ix"] < 0).sum() == 0
-    else:
-        mask_df.loc[mask_df["region_ix"] < 0, "region_ix"] = len(regions.names)
-
-    mask_df[out_name] = np.take(
-        np.array(regions.names + [""]), np.array(mask_df["region_ix"])
-    )
-
-    return mask_df[out_name]
-
-
-def get_empty_exp_grid(elev_tile, grid_width):
-    """Initialize DataFrame template representing an exposure tile covering
-    the same space as `elev_tile`.
-
-    Parameters
-    ----------
-    elev_tile : xarray.DataArray
-        Elevation raster tile
-
-    grid_width : float
-        Width of grid cells indexing exposure, in degrees
-
-    Returns
-    -------
-    df : pandas.DataFrame
-        DataFrame with fields `lat`, `lon`, `x_ix`, and `y_ix`, providing
-        template to fill in exposure fields like asset value and population
-    """
-
-    mg = np.meshgrid(elev_tile.x.values, elev_tile.y.values)
-
-    df = pd.DataFrame({"lat": mg[1].flatten(), "lon": mg[0].flatten()})
-
-    df["x_ix"] = grid_val_to_ix(df["lon"], grid_width)
-    df["y_ix"] = grid_val_to_ix(df["lat"], grid_width)
-
-    out_types = {
-        "lat": np.float32,
-        "lon": np.float32,
-        "x_ix": np.int16,
-        "y_ix": np.int16,
-    }
-
-    df = df.astype({k: v for k, v in out_types.items() if k in df.columns})
-
-    return df
-
-
-def get_cell_size_km(elev_tile, bbox):
-    """Get approximate size of a grid cell in `elev_tile`. Assumes the median
-    latitude extends over the entire cell, so that all grid cells are equal in
-    size. Could be improved by evaluating size at each pixel's latitude in
-    `elev_tile`.
-
-    Parameters
-    ----------
-    elev_tile : xarray.DataArray
-        Elevation raster tile
-
-    bbox : shapely.Polygon
-        Bounding box of `elev_tile`
-
-    Returns
-    -------
-    cell_size_km : float
-        Approximate size in km2 of each pixel in `elev_tile`
-
-    """
-
-    # grid cell area is determined by latitude
-    tile_size_km = np.cos(np.deg2rad(bbox.centroid.y)) * (LAT_TO_M / 1000) ** 2
-    cell_size_km = tile_size_km / elev_tile.size
-
-    return cell_size_km
-
-
-def get_closest_valid_exp_tiles(
-    missing_exp_tiles, valid_exp_tiles, max_batch_comparisons=int(2e7)
-):
-    """Get the closest valid exposure tiles to the invalid tiles with exposure
-    values that need to be re-assigned.
-
-    Parameters
-    ----------
-    missing_exp_tiles : pandas.DataFrame
-        Tiles with attributed exposure (asset value or population) that do not
-        overlap any land areas in the Digital Elevation Model.
-
-    valid_exp_tiles : pandas.DataFrame
-        Tiles that overlap land areas in the Digital Elevation Model. (i.e.,
-        candidates for re-assignment of the missing exposure)
-
-    max_batch_comparisons : int
-        Maximum number of simultaneous comparisons to make using
-        `dist_matrix()`. High number of comparisons can reduce computation time
-        but increase memory footprint.
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame mapping `missing_exp_tiles` to their closest
-        `valid_exp_tiles`. Original indices are `x_ix` and `y_ix`, and the
-        valid indices are labelled `valid_x_ix` and `valid_y_ix`.
-    """
-
-    if len(valid_exp_tiles) == 0:
-        return None
-
-    src_locs = missing_exp_tiles[["lon", "lat"]].to_numpy()
-    dst_locs = valid_exp_tiles[["lon", "lat"]].to_numpy()
-
-    total_comparisons = len(src_locs) * len(dst_locs)
-
-    closest_ix = np.zeros(len(src_locs), dtype=int) - 1
-
-    num_batches = int(total_comparisons / max_batch_comparisons) + 1
-    batch_size_src = int(len(src_locs) / num_batches)
-
-    for batch in range(num_batches):
-        batch_start = batch * batch_size_src
-        batch_end = min((batch + 1) * batch_size_src, len(src_locs))
-        closest_ix_batch = dist_matrix(
-            src_locs[batch_start:batch_end, 0],
-            src_locs[batch_start:batch_end, 1],
-            dst_locs[:, 0],
-            dst_locs[:, 1],
-        ).argmin(axis=1)
-
-        closest_ix[batch_start:batch_end] = closest_ix_batch
-
-    missing_exp_tiles["closest_ix"] = closest_ix
-
-    missing_exp_tiles["valid_x_ix"] = np.take(
-        valid_exp_tiles["x_ix"].to_numpy(),
-        missing_exp_tiles["closest_ix"].to_numpy(),
-    )
-    missing_exp_tiles["valid_y_ix"] = np.take(
-        valid_exp_tiles["y_ix"].to_numpy(),
-        missing_exp_tiles["closest_ix"].to_numpy(),
-    )
-
-    return missing_exp_tiles[["x_ix", "y_ix", "valid_x_ix", "valid_y_ix"]]
-
-
-def get_granular_grid(bbox, grid_width=3601, cap=sset.ELEV_CAP):
-    """Generate a dummy grid on a 1-degree tile using the same format and level
-    of granularity as the elevation tiles used in `sliiders` (i.e. 1 arcsec).
-
-    Parameters
-    ----------
-    bbox : shapely.Polygon
-        Bounding box of the 1-degree tile
-
-    grid_width : int
-        Number of pixels to use as width and height in the area defined by
-        `bbox`.
-
-    cap : int
-        An arbitrary integer higher than any elevations saved in SLIIDERS-ECON
-        outputs. Allows compatibility with functions that process elevation
-        tiles.
-
-    Returns
-    -------
-    granular_grid : xarray.DataArray
-        Grid with a dummy elevation variable set at `cap`, in the same format
-        as `sliiders` 1-degree elevation tiles.
-
-    """
-
-    size = 1 / grid_width
-
-    llon, llat, ulon, ulat = bbox.bounds
-
-    lons_small = np.arange(llon + (size / 2), ulon, size)
-    lats_small = np.flip(np.arange(llat + (size / 2), ulat, size))
-
-    xx, yy = [i.flatten() for i in np.meshgrid(lons_small, lats_small)]
-
-    granular_grid = pd.DataFrame(
-        {"y": yy, "x": xx, "v": cap * np.ones(grid_width**2)}
-    ).set_index(["y", "x"])
-    granular_grid = granular_grid.to_xarray().v
-
-    return granular_grid
-
-
-def process_landscan(
-    landscan_zip,
-    dir_landscan_raw,
-    dir_landscan_int,
-    landscan_year,
-    save_to_file=True,
-    NWORKERS=20,
-):
-    """Convert raw LandScan Zip-file into format suitable for global `sliiders`
-    grid.
-
-    Parameters
-    ----------
-    landscan_zip : pathlib.Path
-        Path to raw Zip-file downloaded from LandScan
-
-    dir_landscan_raw : pathlib.Path
-        Path to unzipped LandScan directory containing raw files
-
-    dir_landscan_int : pathlib.Path
-        Path to directory in which to store output of this function
-
-    landscan_year : str
-        Year (i.e. version) of LandScan dataset, e.g. "2019"
-
-    save_to_file : bool
-        Whether to save the output in a file. If True, two files will be saved
-        within `dir_landscan_int`, one with `x_ix`, `y_ix`, and `population`,
-        and another with the additional fields `x` and `y` to represent
-        longitude and latitude.
-
-    NWORKERS : int
-        Number of Dask workers with which to run this function.
-
-    Returns
-    -------
-    pop_df : pandas.DataFrame
-        DataFrame of global population indexed by `x_ix`, `y_ix` coordinates
-    """
-    warnings.filterwarnings("ignore", message=".*Reshaping is producing a large chunk*")
-
-    # Unzipping
-    path_landscan = dir_landscan_raw / f"lspop{landscan_year}" / "hdr.adf"
-
-    if not path_landscan.exists():
-        with zipfile.ZipFile(landscan_zip, "r") as zip_ref:
-            zip_ref.extractall(dir_landscan_raw)
-
-    # Organizing TIF to parquet
-
-    image_name = sset.DASK_IMAGE
-    gateway = Gateway()
-    cluster = gateway.new_cluster(worker_image=image_name, profile="micro")
-    client = cluster.get_client()
-    cluster.scale(NWORKERS)
-    display(cluster)
-
-    # Open raw population raster
-
-    pop_ds = rioxarray.open_rasterio(path_landscan, chunks={"x": 2700, "y": 10440})
-    pop_ds = pop_ds.squeeze().drop("band")
-
-    # Replace null values with 0's
-    pop_ds = pop_ds.where(pop_ds >= 0, 0)
-    pop_ds = pop_ds.persist()
-
-    # Transform to dataframe
-
-    pop_da = pop_ds.to_dataset(name="population")
-    pop_ddf = pop_da.to_dask_dataframe()
-    pop_ddf = pop_ddf.drop(columns=["spatial_ref"])
-    pop_ddf = pop_ddf.persist()
-    pop_ddf = pop_ddf[pop_ddf["population"] > 0].persist()
-
-    # Bring to local
-    pop_df = pop_ddf.compute()
-
-    # Convert coordinates to indices
-
-    pop_df["x_ix"] = grid_val_to_ix(pop_df["x"].to_numpy(), sset.LANDSCAN_GRID_WIDTH)
-
-    pop_df["y_ix"] = grid_val_to_ix(pop_df["y"].to_numpy(), sset.LANDSCAN_GRID_WIDTH)
-
-    # Drop unnecessary columns
-
-    pop_with_xy = pop_df.copy()
-    pop_df = pop_df.drop(columns=["x", "y"]).reset_index(drop=True)
-    pop_with_xy = pop_with_xy.reset_index(drop=True)
-
-    # Save and shut down workers
-    if save_to_file:
-        dir_landscan_int.mkdir(exist_ok=True)
-        pop_df.to_parquet(dir_landscan_int / "population.parquet", index=False)
-        pop_with_xy.to_parquet(
-            dir_landscan_int / "population_with_xy.parquet", index=False
-        )
-
-    cluster.scale(0)
-    client.close()
-    cluster.close()
-    cluster.shutdown()
-
-    return pop_df
-
-
 def interpolate_da_like(da_in, da_out):
     """Based on the coordinates of `da_out`, interpolate (bicubic) the data that is
     contained in `da_in`; both `da_in` and `da_out` need to be `xarray.DataArray`s in
@@ -3328,3 +2669,24 @@ def interpolate_da_like(da_in, da_out):
         dims=["lat", "lon"],
         coords=dict(da_out.coords),
     )
+
+
+def get_ll(tile_name):
+    """
+    Return bounding box from tile name in the string format "VXXHYYY" representing the
+    southwestern corner of a 1-degree tile, where "V" is "N" (north) or "S" (south), "H"
+    is "E" (east) or "W" (west), "XX" is a two-digit zero-padded number indicating the
+    number of degrees north or south from 0,0, and "YYY" is a three-digit zero-padded
+    number indicating the number of degrees east or west from 0,0.
+    """
+    lat_term, lon_term = tile_name[:3], tile_name[3:]
+
+    lat_direction, lat_value = lat_term[0], int(lat_term[1:])
+    lon_direction, lon_value = lon_term[0], int(lon_term[1:])
+
+    lat_sign = 1 if lat_direction == "N" else -1
+    lon_sign = 1 if lon_direction == "E" else -1
+
+    llat = lat_sign * lat_value
+    llon = lon_sign * lon_value
+    return llon, llat
