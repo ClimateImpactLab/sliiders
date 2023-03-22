@@ -1,0 +1,35 @@
+name: sliiders
+channels:
+  - conda-forge
+dependencies:
+  - beautifulsoup4
+  - cartopy
+  - contextily
+  - dask-geopandas
+  - distributed
+  - fsspec
+  - jupyterlab
+  - matplotlib
+  - networkx
+  - numba
+  - numpy
+  - numpy_groupies
+  - pandas
+  - pandas-datareader
+  - pint
+  - pygeos
+  - pyinterp
+  - python
+  - pypdf2
+  - pyreadr
+  - regionmask
+  - requests
+  - rioxarray
+  - scikit-learn
+  - scipy
+  - shapely
+  - statsmodels
+  - tqdm
+  - xarray
+  - xesmf
+  - zarr

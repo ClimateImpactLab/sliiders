@@ -1,8 +1,14 @@
 History
 =======
 
+v1.1.1
+------
+* Update settings file for local development
+* Add environment.yml
+* Drop no longer used LocalizeSL submodule
+  
 v1.1.0
-----------
+------
 * Updates consistent with revisions to Depsky et al. 2023
 
 v1.0.2
