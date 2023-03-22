@@ -1,102 +1,111 @@
-# various functions used for the country-level information workflow
-from itertools import product as lstprod
+"""
+various functions used for the country-level information workflow in
+`notebooks/data-processing/1-country-level-temporal-trends`
+"""
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize as opt_min
+import statsmodels.api as sm
+import xarray as xr
+from sklearn.model_selection import KFold
 from tqdm.auto import tqdm
 
-from .settings import PATH_PWT_RAW, PPP_CCODE_IF_MSNG, SCENARIOS, SSP_PROJ_ORG_SER
+from sliiders.settings import FRA_OVERSEAS_DEPT, HISTORICAL_YEARS
 
+# group y, group x, year of independence if any, and whether it's disputed or not
+GROUPS_X_Y = [
+    # GBR cases, current territories and former territories (now independent)
+    ["AIA", "GBR", np.nan, 0],
+    ["BMU", "GBR", np.nan, 0],
+    ["VGB", "GBR", np.nan, 0],
+    ["CYM", "GBR", np.nan, 0],
+    ["FLK", "GBR", np.nan, 1],  # disputed by Argentina
+    ["IMN", "GBR", np.nan, 0],
+    ["GGY", "GBR", np.nan, 0],
+    ["GIB", "GBR", np.nan, 0],
+    ["JEY", "GBR", np.nan, 0],
+    ["MSR", "GBR", np.nan, 0],
+    ["PCN", "GBR", np.nan, 0],
+    ["SHN", "GBR", np.nan, 0],
+    ["TCA", "GBR", np.nan, 0],
+    ["ATG", "GBR", 1981, 0],
+    ["BHS", "GBR", 1973, 0],
+    ["BRB", "GBR", 1966, 0],
+    ["CYP", "GBR", 1960, 0],
+    ["DMA", "GBR", 1979, 0],
+    ["FJI", "GBR", 1970, 0],
+    ["GRD", "GBR", 1974, 0],
+    ["JAM", "GBR", 1962, 0],
+    ["KIR", "GBR", 1979, 0],
+    ["MDV", "GBR", 1966, 0],
+    ["MLT", "GBR", 1964, 0],
+    ["MUS", "GBR", 1968, 0],
+    ["SYC", "GBR", 1976, 0],
+    ["SLB", "GBR", 1978, 0],
+    ["KNA", "GBR", 1983, 0],
+    ["LCA", "GBR", 1979, 0],
+    ["VCT", "GBR", 1979, 0],
+    ["TTO", "GBR", 1962, 0],
+    ["TON", "GBR", 1970, 0],
+    ["TUV", "GBR", 1978, 0],
+    ["VUT", "GBR", 1980, 0],  # also formerly managed by France
+    # FRA cases, current territories and former territories (now independent)
+    ["GLP", "FRA", np.nan, 0],
+    ["GUF", "FRA", np.nan, 0],
+    ["MTQ", "FRA", np.nan, 0],
+    ["MYT", "FRA", np.nan, 0],
+    ["SPM", "FRA", np.nan, 0],
+    ["REU", "FRA", np.nan, 0],
+    ["MAF", "FRA", np.nan, 0],
+    ["BLM", "FRA", np.nan, 0],
+    ["PYF", "FRA", np.nan, 0],
+    ["WLF", "FRA", np.nan, 0],
+    ["NCL", "FRA", np.nan, 0],
+    ["AND", "FRA", 1814, 0],
+    ["COM", "FRA", 1975, 0],
+    ["MCO", "FRA", 1918, 0],
+    # NLD cases, current territory
+    ["SXM", "NLD", np.nan, 0],
+    ["ABW", "NLD", np.nan, 0],
+    ["BES", "NLD", np.nan, 0],
+    ["CUW", "NLD", np.nan, 0],
+    # DNK cases, current territory
+    ["FRO", "DNK", np.nan, 0],
+    ["GRL", "DNK", np.nan, 0],
+    # NZL cases, current territories and former territories (now independent)
+    ["COK", "NZL", np.nan, 0],
+    ["NIU", "NZL", np.nan, 0],
+    ["TKL", "NZL", np.nan, 0],
+    ["WSM", "NZL", 1962, 0],
+    # USA cases, current territories and former territories (now independent)
+    ["ASM", "USA", np.nan, 0],
+    ["GUM", "USA", np.nan, 0],
+    ["MNP", "USA", np.nan, 0],
+    ["PRI", "USA", np.nan, 0],
+    ["VIR", "USA", np.nan, 0],
+    ["MHL", "USA", 1986, 0],  # under "free association"
+    ["FSM", "USA", 1986, 0],  # under "free association"
+    ["PLW", "USA", 1981, 0],  # under "free association"
+    # FIN cases
+    ["ALA", "FIN", np.nan, 0],
+    # AUS cases, current territories and former territories (now independent)
+    ["CCK", "AUS", np.nan, 0],
+    ["CXR", "AUS", np.nan, 0],
+    ["NFK", "AUS", np.nan, 0],
+    ["NRU", "AUS", 1968, 0],  # technically also by GBR and NZL
+    # Individual cases
+    ["SSD", "SDN", 2011, 1],  # South Sudan and Sudan - regional conflicts
+    ["ZNC", "CYP", 1983, 1],  # North Cyprus and Cyprus - disputed
+    ["ESH", "MAR", np.nan, 1],  # Western Sahara with Morocco - disputed
+    ["VAT", "ITA", 1929, 0],  # Vatican and Italy
+    ["SMR", "ITA", 300, 0],  # San Marino and Italy
+    ["LIE", "AUT", 1866, 0],  # Liech. was always independent but close ties to Austria
+    ["XKO", "SRB", 2008, 1],  # Kosovo declared indep. in 2008
+]
 
-def log_lin_interpolate(df, header="v_"):
-    """Simple log-linear interpolation, to fit the horizontal (or wide-panel format)
-    dataset that we use.
-
-    Parameters
-    ----------
-    df : pandas DataFrame
-        contains data that we may interpolate
-    header : str
-        header of the variable names; should be followed by year (e.g., "v_1950")
-
-    Returns
-    -------
-    df_rtn : pandas DataFrame
-        DataFrame containing interpolated data
-
-    """
-
-    v_ = np.sort([x for x in df.columns if header in x])
-    yrs = [int(x.replace(header, "")) for x in v_]
-    all_yrs = range(min(yrs), max(yrs) + 1)
-    all_v = np.sort([header + str(x) for x in all_yrs])
-    front_v = [x for x in df.columns if header not in x]
-
-    df_missing_v = np.setdiff1d(all_v, v_)
-    df_rtn = df.copy()
-    if len(df_missing_v) > 0:
-        df_rtn[df_missing_v] = np.nan
-
-    ## re-ordering the columns, just in case
-    df_rtn = df_rtn[np.hstack([front_v, all_v])]
-
-    for i in df_rtn.index:
-        fp = df_rtn.loc[i, :][all_v]
-        ## in case there is any nonpositive values or no missing values,
-        ## cannot log-linearly interpolate (former) and no need to interpolate (latter)
-        if (fp <= 0).any() or (not fp.isnull().any()):
-            continue
-
-        where_nm = np.where(~pd.isnull(fp.values))[0]
-        fp, i_yrs = np.log(fp[where_nm].astype("float64")), np.array(all_yrs)[where_nm]
-
-        ## we only want to INTERpolate with this function, and not EXTRApolate
-        want_interp_range = range(i_yrs.min(), i_yrs.max() + 1)
-        case = np.exp(np.interp(want_interp_range, i_yrs, fp))
-        want_interp_v = ["v_" + str(x) for x in want_interp_range]
-        df_rtn.loc[i, want_interp_v] = case
-
-    return df_rtn
-
-
-def ssp_and_model_simplify(ssp_col, model_col, df, dic=SSP_PROJ_ORG_SER):
-    """Simplifying the SSP and model (IAM) designations. For instance, "SSP2" has many
-    corresponding versions of the same scenario including SSP2_v9_130219,
-    SSP2_v9_130325, and so forth. This function simplifies those different names.
-
-    Parameters
-    ----------
-    ssp_col : str
-        column name for the SSP scenario
-    model_col : str
-        column name for the IAM scenario
-    df : pandas DataFrame
-        DataFrame to apply the function to
-    dic : dict
-        containing verbose names and simplified names for SSP-IAM scenarios
-
-    Returns
-    -------
-    df_rtn : pandas DataFrame
-        cleaned DataFrame containing simplified ssp and model names
-
-    """
-
-    ser = pd.Series(dic)
-
-    df["ssp"] = ser.reindex(df[ssp_col]).values
-    df["iam"] = ser.reindex(df[model_col]).values
-
-    df_rtn = df.copy()
-    df_rtn.rename(columns={"REGION": "ccode"}, inplace=True)
-
-    csi = ["ccode", "ssp", "iam"]
-    df_rtn_rest_col = [x for x in df_rtn.columns if x not in csi]
-    df_rtn = df_rtn[csi + df_rtn_rest_col]
-
-    return df_rtn
+GROUPS_X_Y = pd.DataFrame(
+    GROUPS_X_Y, columns=["ccode", "x_ccode", "indep_yr", "disputed"]
+).set_index("ccode")
 
 
 def yearly_growth(df, header="v_"):
@@ -186,8 +195,8 @@ def helper_extrap_using_closest(
     avail_v = hdr + str(avail_yr)
     gr_df_base_avail[v_s] = gr_df_base_avail[v_s].div(gr_df_base_avail[avail_v], axis=0)
 
-    ## if there's a PERFERCTLY matching set of growth rates, then just take that
-    ## country (or those countries') growth rates
+    # if there's a PERFERCTLY matching set of growth rates, then just take that
+    # country (or those countries') growth rates
     if (gr_df_base_avail.sse == 0).any():
         idx = gr_df_base_avail.loc[gr_df_base_avail.sse == 0, :].index.unique()
         if len(idx) == 1:
@@ -267,7 +276,7 @@ def extrap_using_closest(
         without any extrapolated (i.e., the "non-problematic")
 
     """
-    ## indicing for operations below
+    # indicing for operations below
     ctry_msg = "Needs have the country-code column / index `{}` in the dataset"
     ctry_msg = ctry_msg.format(ctry_col)
     assert (ctry_col in orig_df.index.names) or (ctry_col in orig_df.columns), ctry_msg
@@ -277,10 +286,10 @@ def extrap_using_closest(
     else:
         df_idxed = pd.DataFrame(orig_df)
 
-    ## sorting the problematic (with missing-value) countries for consistency
+    # sorting the problematic (with missing-value) countries for consistency
     prob, exclude_these = list(np.sort(prob_lst)), list(exclude_these)
 
-    ## variable names and getting the dataframe of "good-to-go" country codes
+    # variable names and getting the dataframe of "good-to-go" country codes
     v_ = np.sort(
         [
             x
@@ -291,17 +300,17 @@ def extrap_using_closest(
         ]
     )
 
-    ## good_ctries are only those that are absolutely filled
-    ## excluding those that should be excluded
+    # good_ctries are only those that are absolutely filled
+    # excluding those that should be excluded
     good_ctries = df_idxed[(~df_idxed[v_].isnull().any(axis=1))].index.unique()
     good_ctries = np.setdiff1d(good_ctries, prob + exclude_these)
     good_df = df_idxed.loc[good_ctries, :]
     good_gr = yearly_growth(good_df, header)
 
-    ## running for each of the problematic countries
+    # running for each of the problematic countries
     df_collection = []
     for i in tqdm(prob):
-        ## there could be missing values in between known yrs, so interpolate
+        # there could be missing values in between known yrs, so interpolate
         tgt_df = df_idxed.loc[[i], :].copy()
         row_vals = tgt_df.loc[i, v_].copy()
         row_vals = np.where(row_vals < 0, np.nan, row_vals)
@@ -319,20 +328,20 @@ def extrap_using_closest(
             tgt_df[v_valid] = np.exp(log_interp_vals)
         row_valid = tgt_df.loc[i, v_valid]
 
-        ## as yearly growth rates, with missing values filled as 0
+        # as yearly growth rates, with missing values filled as 0
         tgt_gr = yearly_growth(tgt_df).fillna(0)
 
-        ## detecting which is the valid (or non-missing) growth rates
+        # detecting which is the valid (or non-missing) growth rates
         gr_row_valid = tgt_gr.loc[i, v_valid].values
 
-        ## subtract the problematic growth rates from good-to-go growth rates,
-        ## and calculate the sum of squared errors to detect which is the closest
+        # subtract the problematic growth rates from good-to-go growth rates,
+        # and calculate the sum of squared errors to detect which is the closest
         sse_df = good_gr.copy()
         sse_df["sse"] = (sse_df[v_valid].sub(gr_row_valid, axis=1) ** 2).sum(axis=1)
         sse_df.sort_values(["sse"], inplace=True)
         sse_df["sse_rank"] = range(0, sse_df.shape[0])
 
-        ## top n closest in terms of trajectory
+        # top n closest in terms of trajectory
         necess_sse_df = sse_df[sse_df.sse_rank < n_det][["sse", "sse_rank"]]
         necess_sse_df = necess_sse_df.merge(
             good_df[v_],
@@ -341,7 +350,7 @@ def extrap_using_closest(
             right_index=True,
         )
 
-        ## if need to project backwards in time
+        # if need to project backwards in time
         rtn_row, past_fill, fut_fill = np.array(row_valid), None, None
         if v_valid[0] != v_[0]:
             avail_yr, earl_yr = int(v_valid[0][-4:]), begin_end[0]
@@ -358,7 +367,7 @@ def extrap_using_closest(
             rtn_row = np.hstack([past_vals, rtn_row])
             past_fill = "{}-{}".format(earl_yr, avail_yr - 1)
 
-        ## if need to project forward in time
+        # if need to project forward in time
         if v_valid[-1] != v_[-1]:
             avail_yr, late_yr = int(v_valid[-1][-4:]), begin_end[-1]
             fut_vals = helper_extrap_using_closest(
@@ -374,7 +383,7 @@ def extrap_using_closest(
             rtn_row = np.hstack([rtn_row, fut_vals])
             fut_fill = "{}-{}".format(avail_yr + 1, late_yr)
 
-        ## extrapolation information as "fill_info"
+        # extrapolation information as "fill_info"
         used_ccodes, fill_info = ",".join(list(necess_sse_df.index.unique())), "-"
         if (past_fill is not None) and (fut_fill is not None):
             fill_info = past_fill + "," + fut_fill + ":" + used_ccodes
@@ -418,7 +427,7 @@ def organize_hor_to_ver(
     Note: For every row of the "input" dataframe `df`, we assume that there is at most
         one combination of the categories in `catnames`; for instance, if `catname`
         is equal to ["ccode", "ssp", "iam"], we expect that there should be at most
-        one account for each countrycode-SSP-IAM combination.
+        one account for each countrycode-SXSPIAM combination.
 
     Parameters
     ----------
@@ -452,7 +461,7 @@ def organize_hor_to_ver(
     cats = np.hstack([[main_cat], sub_cats])
     reorder = np.hstack([[main_cat, timename], sub_cats])
 
-    ## resetting the index to be compliant with `pandas.wide_to_long`
+    # resetting the index to be compliant with `pandas.wide_to_long`
     df_reind = df.reset_index()
     if df.index.names is None:
         df_reind.drop(["index"], axis=1, inplace=True)
@@ -504,7 +513,7 @@ def organize_ver_to_hor(
 
     """
 
-    ## necessary to reset the index to pass to pandas.pivot
+    # necessary to reset the index to pass to pandas.pivot
     df_rtn = df.reset_index()
     names = np.array([varname, timename, ccodename])
     assert len(np.setdiff1d(names, df_rtn.columns)) == 0, "necessary columns missing."
@@ -526,9 +535,10 @@ def organize_ver_to_hor(
 
 def ppp_conversion_specific_year(
     yr,
+    pwt_path,
     to=True,
     extrap_sim=True,
-    fill_msng_ctries=PPP_CCODE_IF_MSNG,
+    fill_msng_ctries={},
     pwtvar="pl_gdpo",
 ):
     """Given a specified year (`yr`), creates a table of PPP conversion factors either
@@ -568,9 +578,9 @@ def ppp_conversion_specific_year(
     """
 
     print("Fetching information from PWT...")
-    ## reading in the necessary PWT dataframe
+    # reading in the necessary PWT dataframe
     pwt = (
-        pd.read_excel(PATH_PWT_RAW)
+        pd.read_excel(pwt_path)
         .rename(columns={"countrycode": "ccode"})
         .set_index(["ccode", "year"])
     )
@@ -581,8 +591,8 @@ def ppp_conversion_specific_year(
     pl = organize_ver_to_hor(pwt, pwtvar, "year", "ccode", yr_range)
     pl_ccode = pl.index.get_level_values("ccode").unique()
 
-    ## replace with pl_gdpo information if specific pl values for a country are
-    ## missing entirely
+    # replace with pl_gdpo information if specific pl values for a country are
+    # missing entirely
     if pwtvar != "pl_gdpo":
         pl_gdpo = organize_ver_to_hor(pwt, "pl_gdpo", "year", "ccode", yr_range)
         for c in pl_ccode:
@@ -603,7 +613,7 @@ def ppp_conversion_specific_year(
         pl_ver.rename(columns={"msng_fill": fill_name}, inplace=True)
         pl_ver[fill_name] = [v.split(":")[-1] for v in pl_ver[fill_name]]
 
-        ## making sure that the fill-information is "-" if information was not missing
+        # making sure that the fill-information is "-" if information was not missing
         pl_ver = pl_ver.merge(
             pwt[[pwtvar]].rename(columns={pwtvar: "temp"}),
             left_index=True,
@@ -616,8 +626,8 @@ def ppp_conversion_specific_year(
     else:
         pl_ver = organize_hor_to_ver(pl, "ccode", None, pwtvar, yrs=yr_range)
 
-    ## taking care of the case of Bermuda, since it is sometimes suffering
-    ## from negative price levels
+    # taking care of the case of Bermuda, since it is sometimes suffering
+    # from negative price levels
     if (pwtvar == "pl_gdpo") and ("BMU" in pl_ccode):
         pl_ccode = np.setdiff1d(pl_ccode, ["BMU"])
         bmu_copy = pl_ver.loc[("GBR", slice(None)), :].reset_index().copy()
@@ -626,7 +636,7 @@ def ppp_conversion_specific_year(
         bmu_copy.set_index(["ccode", "year"], inplace=True)
         pl_ver = pd.concat([pl_ver.loc[(pl_ccode, slice(None)), :], bmu_copy], axis=0)
 
-    ## merging the "base" price level, which is that of the US
+    # merging the "base" price level, which is that of the US
     pwt_ppp = pl_ver.merge(
         (
             pl_ver.loc[("USA", slice(None)), [pwtvar]]
@@ -640,13 +650,13 @@ def ppp_conversion_specific_year(
         how="left",
     )
 
-    ## note that according to Feenstra et al. (2015), PPP / XR = pl / pl_base
-    ## with the "base" again being the United States; `ppp` below is PPP / XR
+    # note that according to Feenstra et al. (2015), PPP / XR = pl / pl_base
+    # with the "base" again being the United States; `ppp` below is PPP / XR
     pwt_ppp["ppp"] = pwt_ppp[pwtvar] / pwt_ppp["base"]
 
-    ## multiplying `ppp` can be understood as turning PPP-adjusted value of a certain
-    ## year to nominal value; turning base-year-a PPP values to base-year-b PPP values
-    ## therefore requires multiplying `ppp`(a) / `ppp`(b)
+    # multiplying `ppp` can be understood as turning PPP-adjusted value of a certain
+    # year to nominal value; turning base-year-a PPP values to base-year-b PPP values
+    # therefore requires multiplying `ppp`(a) / `ppp`(b)
     tgtyr_ppp = f"ppp_{yr}"
     pwt_ppp = pwt_ppp.merge(
         (
@@ -661,7 +671,7 @@ def ppp_conversion_specific_year(
         how="left",
     )
 
-    ## conversion rates
+    # conversion rates
     if to:
         pwt_ppp["conv"] = pwt_ppp["ppp"] / pwt_ppp[tgtyr_ppp]
     else:
@@ -676,7 +686,7 @@ def ppp_conversion_specific_year(
 
     pwt_ppp = pwt_ppp.loc[(to_keep, slice(None)), :].sort_index()
 
-    ## filling in the missing countries with known values
+    # filling in the missing countries with known values
     if fill_msng_ctries is not None:
         print("Filling in the missing countries...")
         pwt_ppp["conv_fill"] = "refer_to_other_cols"
@@ -838,442 +848,205 @@ def smooth_fill(
     return out.where(either_non_null)
 
 
-def minimize_simple_production(x, K_values, Y_values):
-    """Helper function for getting at the `A` (TFP) and `alpha` (GDP elasticity of
-    capital). Returns the sum of squared errors with respect to actual GDP values.
-
-    Parameters
-    ----------
-    x : array-like of floats
-        divided into `A` (TFP) and `alpha` (GDP elasticity of capital)
-    K_values : array-like of floats
-        containing historical capital values (in the case of only-capital production
-        functional form) or historical per-capita capital values (in the case of Cobb-
-        Douglas functional form)
-    Y_values : array-like of floats
-        containing historical GDP values (in the case of only-capital production
-        functional form) or historical per-capita GDP values (in the case of Cobb-
-        Douglas functional form)
-
-    Returns
-    -------
-    sse : float
-        Sum of squared errors from netting the actual GDP values from estimated
-        GDP values assuming a functional form
-
-    """
-    A, alpha = x
-
-    diff = A * (K_values**alpha) - Y_values
-    sse = np.sum(diff**2)
-
-    return sse
-
-
-def MPK_init_calc(
-    ccode,
-    hist_df,
-    base2010_df,
-    alpha_overall,
-    hist_YKP=["rgdpna_19", "rnna_19", "pop"],
-    base_YKP=["gdp", "capital", "pop"],
-    init_A_alpha=[100, 1],
+def smooth_fill_aux_source(
+    spec_df,
+    agg_df,
+    use_col,
+    msg_fill,
+    msg_fill_gr,
+    clean_col="rgdpna_pc",
+    source_col="gdppc_source",
+    years=HISTORICAL_YEARS,
 ):
-    """Function for calculating the value of MPK (marginal product of capital) of the
-    country specified by `ccode` and in the year specified by `year`.
-    Parameters
-    ----------
-    ccode : str
-        country code of the country we need to calculate the MPK for
-    hist_df : pandas.DataFrame
-        dataframe containing historical (1950-2020) information on GDP, capital stock,
-        and population; should contain the column names in `hist_YKP`. Note that its
-        values are in millions (of dollars for GDP and capital, of people
-        for population)
-    base2010_df : pandas.DataFrame
-        dataframe containing projected 2010 information on GDP and population and
-        baseline 2010 historical capital stock information; should contain the column
-        names in `base_YKP`
-    alpha_overall : array-like of floats
-        should contain elasticities of GDP w.r.t. capital values that have been pre-
-        calculated; two elements, the former being our own calculation of the elasticity
-        and the latter being the elasticity calculated in Crespo Cuaresma (2017)
-    hist_YKP : array-like of str
-        column names (of `hist_df`) in the following order: constant PPP GDP
-        variable, constant PPP capital stock variable, and population variable
-    base_YKP : array-like of str
-        column names (of `base2010_df`) in the following order: constant PPP GDP
-        variable, constant PPP capital stock variable, and population variable
-    init_A_alpha : array-like of floats
-        points of initialization for `A` (TFP) and `alpha` (elasticity of GDP w.r.t.
-        capital)
-
-    Returns
-    -------
-    MPK_overall_our, MPK_overall_iiasa, MPK_country_pc, MPK_country : tuple of floats
-        calculated MPKs using different versions of the GDP elasticity w.r.t. capital,
-        first - using our self-calculated elasticity,
-        second - using the Crespo Cuaresma (2017) elasticity,
-        third - using the country-specific elasticity assuming Cobb-Douglass function,
-        fourth - using the country-specific elasticity assuming capital-only function
-
-    """
-
-    # Y, K, pop values of the years that we want to examine
-    histccodes = hist_df.index.get_level_values("ccode").unique()
-    baseccodes = base2010_df.index.get_level_values("ccode").unique()
-    msg_error = "`ccode` must be in both `hist_df` and `base2010_df`."
-    assert (ccode in histccodes) and (ccode in baseccodes), msg_error
-
-    # multiplying 1,000,000 since they are in millions
-    YKP = hist_df.loc[ccode, hist_YKP].dropna()
-    Ys = YKP[hist_YKP[0]].values * 1000000
-    Ks = YKP[hist_YKP[1]].values * 1000000
-    Ps = YKP[hist_YKP[2]].values * 1000000
-
-    # creating the capital intensity values using projected base 2010 data
-    yk_df = base2010_df.loc[
-        base2010_df.index.get_level_values("ccode") == ccode, :
-    ].copy()
-    yk_df = yk_df.reset_index().set_index(["ccode", "ssp", "iam"])[base_YKP]
-    yk_df["yk"] = yk_df[base_YKP[0]] / yk_df[base_YKP[1]]
-
-    # if all zeros for any of the three variables, no reason to calculate MPK
-    if (Ys == 0).all() or (Ks == 0).all() or (Ps == 0).all():
-        yk_df["mpk_our"], yk_df["mpk_iiasa"] = 0, 0
-        yk_df["mpk_ctry_cd"], yk_df["mpk_ctry_co"] = 0, 0
-        return yk_df
-
-    # let us sort them in the order of Ks, just in case
-    KYPs = np.array(sorted(zip(Ks, Ys, Ps)))
-    Ks, Ys, Ps = KYPs[:, 0], KYPs[:, 1], KYPs[:, 2]
-
-    # optimizing values for A (total factor productivity) and alpha (GDP elasticity
-    # wrt. capital); capital-only
-    A_alpha_getter = lambda x: minimize_simple_production(x, Ks, Ys)
-    A, alpha = opt_min(
-        A_alpha_getter, init_A_alpha, bounds=((0, np.inf), (0, np.inf))
-    ).x
-
-    # optimizing values for A and alpha; Cobb-Douglas
-    A_alpha_getter = lambda x: minimize_simple_production(x, Ks / Ps, Ys / Ps)
-    A_pc, alpha_pc = opt_min(
-        A_alpha_getter, init_A_alpha, bounds=((0, np.inf), (0, np.inf))
-    ).x
-
-    # calculating MPK values based on the above A and alpha calculations
-    yk_df["mpk_our"] = alpha_overall[0] * yk_df["yk"]
-    yk_df["mpk_iiasa"] = alpha_overall[-1] * yk_df["yk"]
-    yk_df["mpk_ctry_cd"] = alpha_pc * yk_df["yk"]
-    yk_df["mpk_ctry_co"] = alpha * yk_df["yk"]
-
-    return yk_df
-
-
-def pim_single_ctry(
-    ccode_df,
-    MPK_init,
-    alpha_overall,
-    MPK_var="mpk_our",
-    scenarios=SCENARIOS,
-    yr_startend=[2010, 2100],
-    MPK_bar=0.1,
-    gamma_MPK=0.985,
-    gamma_I=0.98,
-    Yvar="gdp",
-    Kvar="capital",
-    iy_var="iy_ratio",
-    depre_overall_var="delta",
-    depre_ctry_var="delta_c",
-):
-    """Function for running the perpetual inventory method (PIM, as described in
-    Dellink et al., 2017), for a specific country, for each SSP-IAM scenario.
-
-    ----------
-    ccode_df : pandas.DataFrame
-        DataFrame containing country-specific information for conducting the by-country
-        PIM process to acquire capital stock projections. Needs to contain `Yvar`,
-        `Kvar`, with indices `ccode`, `year`, `ssp`, and `iam`.
-    MPK_init : pandas.DataFrame
-        DataFrame containing initial-year marginal product of capital. Also should
-        contain depreciation rates; so should contain `MPK_var`, `depre_overall_var`,
-        `iy_var`, and `depre_ctry_var` and with index `ccode`, `ssp`, and `iam`
-    alpha_overall : float
-        elasticity of GDP w.r.t. capital, global and not country-specific
-    MPK_var : str
-        column name for the initial-year marginal product of capital
-    scenarios : array-like of tuples of str
-        array-like of tuples containing SSP and IAM (in that order) scenarios
-    yr_startend : array-like of ints
-        starting year and end year of projection
-    MPK_bar : float
-        long-term elasticity of GDP w.r.t. capital, value 0.1 taken from Dellink et al.
-        (2017)
-    gamma_MPK : float
-        velocity of converging to long-term elasticity of GDP w.r.t. capital, value
-        0.985 taken from Dellink et al. (2017)
-    gamma_I : float
-        velocity of converging to long-term investment-to-GDP ratio, value 0.98 taken
-        from Dellink et al. (2017)
-    Yvar : str
-        column name of the constant PPP GDP variable
-    Kvar : str
-        column name of the (initial-year) constant PPP capital stock variable
-    iy_var : str
-        column name of the (initial-year) investment-to-GDP variable
-    depre_overall_var : str
-        depreciation rate variable (over all countries)
-    depre_ctry_var : str
-        country-specific depreciation rate variable
-
-    Returns
-    -------
-    ccode_df : pandas.DataFrame
-        DataFrame containing the updated values of capital stock projection estimates
-
-    """
-    newvar = "{}_estim".format(Kvar)
-    ccode = ccode_df.index.get_level_values("ccode").values[0]
-
-    ## delta is same across all scenarios
-    delta, delta_r = MPK_init.loc[
-        (ccode, "SSP1", "OECD"), [depre_overall_var, depre_ctry_var]
-    ].values
-
-    ccode_df["MPK"], ccode_df["IY"] = np.nan, np.nan
-    ccode_df[newvar], ccode_df["KY"] = np.nan, np.nan
-    for yr in range(yr_startend[0], yr_startend[-1] + 1):
-        for scen in scenarios:
-            ## advancing MPK values annually
-            ssp, iam = scen
-            if yr == yr_startend[0]:
-                MPK = MPK_init.loc[(ccode, ssp, iam), MPK_var]
-            else:
-                prev_MPK = ccode_df.loc[(ccode, yr - 1, ssp, iam), "MPK"]
-                MPK = gamma_MPK * prev_MPK + (1 - gamma_MPK) * MPK_bar
-            ccode_df.loc[(slice(None), yr, ssp, iam), "MPK"] = MPK
-            ky_LT = alpha_overall / MPK
-
-            ## year-to-year GDP growth rates
-            if yr != yr_startend[-1]:
-                g_Ys = ccode_df.loc[(ccode, [yr, yr + 1], ssp, iam), Yvar].values
-                Y_yr = g_Ys[0]
-            else:
-                g_Ys = ccode_df.loc[(ccode, [yr - 1, yr], ssp, iam), Yvar].values
-                Y_yr = g_Ys[1]
-            g_Y = g_Ys[-1] / g_Ys[0] - 1
-
-            ## long-run I-to-Y ratio
-            iy_LT = (g_Y + delta) * ky_LT
-
-            ## I-to-Y ratios time series
-            if yr == yr_startend[0]:
-                IY = MPK_init.loc[(ccode, ssp, iam), iy_var]
-            else:
-                prev_IY = ccode_df.loc[(ccode, yr - 1, ssp, iam), "IY"]
-                IY = (gamma_I * prev_IY) + (1 - gamma_I) * iy_LT
-            ccode_df.loc[(slice(None), yr, ssp, iam), "IY"] = IY
-
-            ## Perpetual inventory method capital stock time series
-            if yr == yr_startend[0]:
-                K_yr = MPK_init.loc[(ccode, ssp, iam), Kvar]
-            else:
-                prev_K = ccode_df.loc[(ccode, yr - 1, ssp, iam), newvar]
-                K_yr = (1 - delta_r) * prev_K + IY * Y_yr
-            ccode_df.loc[(slice(None), yr, ssp, iam), newvar] = K_yr
-            ccode_df.loc[(slice(None), yr, ssp, iam), "KY"] = K_yr / Y_yr
-
-    return ccode_df
-
-
-def examine_against_fig6(pim_df, intensity="KY", fig_size=(18, 9)):
-    """
-    Function to examine the estimated capital intensity (the variable `intensity` in the
-    DataFrame `pim_df`) against the Dellink et al. (2017) output of the same variable
-    for four countries Tanzania, India, China, and the United States (shown in Fig. 6 of
-    the paper). Also calculates the SSE across own estimates and Dellink et al. (2017)'s
-    numbers.
+    """Uses `smooth_fill` to fill in missing information for column `clean_col` in
+    `spec_df` from `use_col` in `agg_df`. As with `smooth_fill`, copies unavailable
+    information from `use_col` in `agg_df` when all information for a certain country
+    is missing but applies growth-rate-based imputation when some information exists.
 
     Parameters
     ----------
-    pim_df : pandas DataFrame
-        containing the `intensity` variable; should have indices `ccode`, `year`,
-        `ssp`, and `iam` (in that order)
-    intensity : str
-        capital intensity variable in `pim_df`
-    fig_size : tuple of floats or ints
-        to set the output figure size
+    spec_df : pandas.DataFrame
+        specified dataframe that contains `ccode` and `year` as multi-indices and
+        the columns `clean_col` and `source_col`
+    agg_df : pandas.DataFrame
+        dataframe containing auxiliary information with `ccode` and `year` as multi-
+        indices and the column `use_col`
+    use_col : str
+        column name in `agg_df` to be used to fill in missing information in column
+        `clean_col` of `spec_df`
+    msg_fill : str
+        if `clean_col` has absolutely no information about a country (specified by
+        index `ccode`) and we need to copy values from `use_col`, what the source
+        message should be (e.g., if copying from World Bank WDI, put "WB")
+    msg_fill_gr : str
+        if `clean_Col` has some information about a country (`ccode`) and we use
+        growth rates to fill in missing yearly information, what the source message
+        should be (e.g., if original information is from PWT and using WB WDI growth
+        rates to fill in missing yearly information, put "PWT + WB_gr")
+    clean_col : str
+        column in `spec_df` that contains primary information about information that
+        one would like to fill in by `smooth_fill`
+    source_col : str
+        column in `spec_df` with details about where `clean_col` information is from;
+        also used to fill in additional source information from `use_col`
+    years : array-like of ints
+        specifies the years that we need information for
 
     Returns
     -------
-    sse : float
-        SSE (w.r.t. Dellink et al. (2017) Figure 6) calculated
-    also, presents the bar graphs (containing capital intensity values from data)
-        plotted in comparison to Dellink et al. (2017) Figure 6
+    pandas.DataFrame
+        containing the columns `clean_col` and `source_col` with filled information
+        from `agg_df` column `use_col`
 
     """
 
-    FOUR_CTRIES = ["TZA", "IND", "CHN", "USA"]
-    SSP = ["SSP{}".format(x) for x in range(5, 0, -1)]
-    FIG_YRS = [2100, 2050, 2020]
+    join_df = spec_df.join(agg_df.loc[(slice(None), years), use_col], how="outer")
+    all_ccode = join_df.index.get_level_values("ccode").unique()
 
-    ## preparing the figures
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9))
-    which = np.arange(0.1, 15 * 0.5 + 0.1, 0.5)
-    which = which + np.array(range(0, len(which))) * 0.1
+    # detecting which to copy entirely from the new data source
+    copy_all = []
+    for i in all_ccode:
+        cnd1 = pd.isnull(join_df.loc[i, clean_col]).all()
+        cnd2 = pd.isnull(join_df.loc[i, use_col]).all()
+        if cnd1 and (not cnd2):
+            copy_all.append(i)
+    to_clean = np.setdiff1d(all_ccode, copy_all)
+    copied_df, to_clean = join_df.loc[copy_all, :], join_df.loc[to_clean, :]
+    copied_df[clean_col] = copied_df[use_col].values
+    copied_df.loc[~pd.isnull(copied_df[clean_col]), source_col] = msg_fill
 
-    ## from Dellink et al. (2017); had to measure the figure with a ruler
-    ky_cm = 3 / 6.525
-    dellink_case = pd.DataFrame(
-        list(lstprod(*[FOUR_CTRIES, FIG_YRS, SSP])), columns=["ccode", "year", "ssp"]
+    # using smooth-fill to fill in using growth rates
+    fill = xr.Dataset.from_dataframe(to_clean[[use_col, clean_col]])
+    fill = (
+        smooth_fill(fill[clean_col], fill[use_col], other_dim="ccode", time_dim="year")
+        .to_dataframe()
+        .join(to_clean[[clean_col, source_col]].rename(columns={clean_col: "old"}))
     )
-    dellink_case[intensity] = np.nan
-    dellink_case["year"] = dellink_case["year"].astype("int64")
-    dellink_case.set_index(["ccode", "year", "ssp"], inplace=True)
+    fill.loc[
+        pd.isnull(fill.old) & ~pd.isnull(fill[clean_col]), source_col
+    ] = msg_fill_gr
 
-    ## Values from Figure 6, in the order of SSP5 -> SSP1 and 2100, 2050, 2020
-    TZN = [
-        np.array([6.2, 4.45, 4.4]) * ky_cm,
-        np.array([6.95, 6.1, 4.475]) * ky_cm,
-        np.array([6.25, 5.675, 4.5]) * ky_cm,
-        np.array([5.95, 5.175, 4.45]) * ky_cm,
-        np.array([6.25, 4.65, 4.45]) * ky_cm,
+    return pd.concat([fill, copied_df], axis=0).sort_index()[[clean_col, source_col]]
+
+
+def fill_ratio_nominal_gdppc(
+    y_ctries,
+    x_ctries,
+    agg_df,
+    gdppc_df,
+    y_nom_col="wb_gdppc_nom",
+):
+    """Calculates the nominal GDP per capita ratio between countries in `y_ctries` and
+    those in `x_ctries` (in column "ratio"), then multiplies the `x_ctries` PPP GDP per
+    capita (in column "x_rgdpna_pc") with `ratio` to impute PPP GDP per capita of
+    `y_ctries` (in column "rgdpna_pc").
+
+    Parameters
+    ----------
+    y_ctries : array-like of str
+        list of countries that are considered to be current or former territories,
+        disputed regions/countries, or smaller nations (e.g., Andorra) associated with
+        nearby larger nations (e.g., France)
+    x_ctries : array-like of str
+        list of countries that are considered to be current or former patron/sovereign
+        countries, disputed regions/countries, or larger nations associated with nearby
+        smaller nations; each item of `x_ctries` should correspond to that of `y_ctries`
+    agg_df : pandas.DataFrame
+        containing the nominal GDP per capita information (in column `y_nom_col`)
+    gdppc_df : pandas.DataFrame
+        containing PPP GDP per capita information with columns "rgdpna_pc" and
+        "gdppc_source"
+    y_nom_col : str
+        nominal GDP per capita column contained in `agg_df`
+
+    Returns
+    -------
+    pandas.DataFrame
+        containing the columns "x_ccode", "x_rgdpna_pc", "rgdpna_pc", "ratio", and
+        "gdppc_source" with multi-indices "ccode" and "year"
+
+    """
+
+    # attaching Group X ctries with their rgdpna_pc and nominal gdppc values
+    yiso_df = agg_df.loc[y_ctries, [y_nom_col]].dropna()
+    yiso_df = yiso_df.join(
+        pd.DataFrame(data={"x_ccode": x_ctries, "ccode": y_ctries}).set_index(["ccode"])
+    )
+    rename = {x: "x_" + x for x in ["rgdpna_pc", "ccode", y_nom_col]}
+    yiso_df = yiso_df.reset_index().merge(
+        agg_df[["rgdpna_pc", y_nom_col]].reset_index().rename(columns=rename),
+        on=["x_ccode", "year"],
+        how="left",
+    )
+
+    # 2020 values from `gdppc_df`
+    if 2020 in yiso_df.year.unique():
+        for iso in yiso_df.loc[(yiso_df.year == 2020), "x_ccode"].unique():
+            yiso_df.loc[
+                (yiso_df.year == 2020) & (yiso_df.x_ccode == iso), "x_rgdpna_pc"
+            ] = gdppc_df.loc[(iso, 2020), "rgdpna_pc"].item()
+
+    # creating rgdpna_pc equivalents
+    yiso_df["ratio"] = yiso_df[y_nom_col].div(yiso_df[f"x_{y_nom_col}"])
+    yiso_df["rgdpna_pc"] = yiso_df[["x_rgdpna_pc", "ratio"]].prod(axis=1)
+
+    # GDPpc source
+    yiso_df.set_index(["ccode", "year"], inplace=True)
+    so = "WB(not_PPP)"
+    if y_nom_col in ["un_gdppc_nom", "un_gdppc_const"]:
+        so = "UN(not_PPP)"
+    elif y_nom_col == "cia_rgdpna_pc":
+        so = "CIA"
+    yiso_df["gdppc_source"] = np.nan
+    for i, iso in enumerate(y_ctries):
+        xiso = x_ctries[i]
+        if xiso == FRA_OVERSEAS_DEPT:
+            xiso = "FRA+OV"
+        so_fo = f"{so}:{iso}-{xiso}_ratio + PWT:{xiso}"
+        if xiso == "FRA":
+            so_fo = f"{so}:{iso}-{xiso}_ratio + PWT+OECD:{xiso}"
+        yiso_df.loc[iso, "gdppc_source"] = so_fo
+        if 2020 in yiso_df.loc[iso, :].reset_index()["year"].unique():
+            if iso == "FRA":
+                yiso_df.loc[(iso, 2020), "gdppc_source"] = so_fo.replace(
+                    "OECD:", "OECD+IMF_gr:"
+                )
+            else:
+                extra = "PWT+WB_gr:"
+                if iso == "CYP":
+                    extra = "PWT+IMF_gr:"
+                yiso_df.loc[(iso, 2020), "gdppc_source"] = so_fo.replace("PWT:", extra)
+
+    return yiso_df.loc[
+        ~pd.isnull(yiso_df.ratio),
+        ["x_ccode", "x_rgdpna_pc", "rgdpna_pc", "ratio", "gdppc_source"],
     ]
-    IND = [
-        np.array([7.4, 5.7, 5.75]) * ky_cm,
-        np.array([7.575, 6.7, 5.8]) * ky_cm,
-        np.array([7.65, 7.45, 5.85]) * ky_cm,
-        np.array([7.3, 6.525, 5.775]) * ky_cm,
-        np.array([7.6, 5.95, 5.75]) * ky_cm,
-    ]
-    CHN = [
-        np.array([9.9, 8.45, 6.35]) * ky_cm,
-        np.array([10.25, 9.55, 6.475]) * ky_cm,
-        np.array([9.8, 10.55, 6.525]) * ky_cm,
-        np.array([9.6, 9.55, 6.45]) * ky_cm,
-        np.array([10.45, 8.8, 6.4]) * ky_cm,
-    ]
-    USA = [
-        np.array([6.25, 5.4, 5.05]) * ky_cm,
-        np.array([6.75, 5.9, 5.1]) * ky_cm,
-        np.array([7.275, 6.325, 5.15]) * ky_cm,
-        np.array([6.9, 6.05, 5.1]) * ky_cm,
-        np.array([6.65, 5.8, 5.1]) * ky_cm,
-    ]
-    for i, ct in enumerate([TZN, IND, CHN, USA]):
-        ctry = FOUR_CTRIES[i]
-        for j, row in enumerate(ct):
-            ssp = SSP[j]
-            dellink_case.loc[(ctry, FIG_YRS, ssp), intensity] = row
 
-    labs = []
-    for j, ssp in enumerate(SSP):
-        labs += ["2100", "{}   2050".format(ssp), "2020"]
 
-    ax1.set_yticks(which + 0.15)
-    ax1.set_yticklabels(labs)
-    dellink_vals = []
-    for l, ctry in enumerate(FOUR_CTRIES):
-        ctry_vals = []
-        for ssp in SSP:
-            ctry_vals += list(dellink_case.loc[(ctry, FIG_YRS, ssp), intensity].values)
-        ax1.barh(which + l * 0.1, ctry_vals, height=0.1, label=ctry)
-        dellink_vals += ctry_vals
-    ax1.legend()
-    ax1.set_title("Capital intensities for selected countries, Dellink et al. (2017)")
-
-    ax2.set_yticks(which + 0.15)
-    ax2.set_yticklabels(labs)
-    our_vals = []
-    for l, ctry in enumerate(FOUR_CTRIES):
-        ctry_vals = []
-        for ssp in SSP:
-            ctry_vals += list(
-                pim_df.loc[(ctry, FIG_YRS, ssp, "OECD"), intensity].values
-            )
-        ax2.barh(which + l * 0.1, ctry_vals, height=0.1, label=ctry)
-        our_vals += ctry_vals
-    mx = max(our_vals + dellink_vals)
-    ax_set = np.linspace(0, np.ceil(mx), 5)
-    sse = ((np.array(our_vals) - np.array(dellink_vals)) ** 2).sum()
-    sser = round(sse, 3)
-
-    ax1.set_xticks(ax_set)
-    ax2.set_xticks(ax_set)
-
-    ax2.legend()
-    ax2.set_title("Capital intensities, our own replication using the OECD method")
-
-    fig.suptitle("Comparison of capital intensities; SSE={}".format(sser), fontsize=12)
-    fig.show()
+def bertram_sse_helper(Y_tr, Y_te, X_tr, X_te, spec, yvar):
+    modelfit = sm.OLS(Y_tr[yvar], sm.add_constant(X_tr[spec])).fit()
+    Y_pred = modelfit.predict(sm.add_constant(X_te[spec]))
+    sse = np.sum((Y_te[yvar].values - Y_pred.values) ** 2)
 
     return sse
 
 
-def top_bottom_10(df, yr=2100, ssp="SSP3", capvar="capital_estim"):
-    """Shows the top ten and bottom ten according to `capvar` in the DataFrame `df`
-    in the year `yr` and the SSP `ssp`; figures for IIASA and OECD IAMs are drawn
-    separately.
+def bertram_k_fold(df, reg_specs, fold_k=10, yvar="rgdpna_pc", random_state=60637):
 
-    Parameters
-    ----------
-    df : pandas DataFrame
-        containing `capvar` variable, with indices `ccode`, `year`,
-        `ssp`, and `iam` (in that order)
-    yr : int
-        year in which we would like to compare the `capvar` values across countries
-    ssp : str
-        SSP scenario that we would like to examine
-    capvar : str
-        the name of the variable to produce top 10 and bottom 10 countries from
+    cols = [x for x in df.columns if x != yvar]
+    X_df, Y_df = df[cols], df[[yvar]]
 
-    Returns
-    -------
-    None, but presents the top 10 and bottom 10 countries by IAMs in bar graphs
+    kf = KFold(n_splits=fold_k, shuffle=True, random_state=random_state)
+    idx_split = list(kf.split(X_df))  # weird generator error if you don't list this
+    min_sse, best_spec = np.inf, None
+    for spec in tqdm(reg_specs):
+        spec_sse = 0
+        for train_idx, test_idx in idx_split:
+            X_test, Y_test = X_df.iloc[test_idx], Y_df.iloc[test_idx]
+            X_train, Y_train = X_df.iloc[train_idx], Y_df.iloc[train_idx]
+            spec_sse += bertram_sse_helper(Y_train, Y_test, X_train, X_test, spec, yvar)
+        if min_sse > spec_sse:
+            best_spec = spec
+            min_sse = spec_sse
 
-    """
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 14))
-
-    iiasa_df = df.loc[(slice(None), yr, ssp, "IIASA"), [capvar]].copy()
-    iiasa_df.sort_values([capvar], inplace=True)
-    iiasa_sma = iiasa_df.index.get_level_values("ccode")[0:10]
-    iiasa_sma_vals = np.log(iiasa_df[capvar].values[0:10])
-
-    small = list(range(1, 11))
-    ax1.barh(small, iiasa_sma_vals, label="Bottom 10", color="orange", height=0.8)
-    ax1.set_yticks(small)
-    ax1.set_yticklabels(iiasa_sma)
-
-    iiasa_big = iiasa_df.index.get_level_values("ccode")[-10:]
-    iiasa_big_vals = np.log(iiasa_df[capvar].values[-10:])
-
-    big = list(range(11, 21))
-    ax1.barh(big, iiasa_big_vals, label="Top 10", color="#87CEEB", height=0.8)
-    ax1.set_yticks(small + big)
-    ax1.set_yticklabels(np.hstack([iiasa_sma, iiasa_big]))
-    fig.suptitle("Log of capital stock in the year {} and {} scenario".format(yr, ssp))
-    ax1.set_title("Case for IIASA")
-    ax1.set_xlabel("Log of millions of dollars")
-
-    oecd_df = df.loc[(slice(None), yr, ssp, "OECD"), [capvar]].copy()
-    oecd_df.sort_values([capvar], inplace=True)
-    oecd_sma = oecd_df.index.get_level_values("ccode")[0:10]
-    oecd_sma_vals = np.log(oecd_df[capvar].values[0:10])
-
-    ax2.barh(small, oecd_sma_vals, label="Bottom 10", color="orange", height=0.8)
-    ax2.set_yticks(small)
-    ax2.set_yticklabels(oecd_sma)
-
-    oecd_big = oecd_df.index.get_level_values("ccode")[-10:]
-    oecd_big_vals = np.log(oecd_df[capvar].values[-10:])
-
-    ax2.barh(big, oecd_big_vals, label="Top 10", color="#87CEEB", height=0.8)
-    ax2.set_yticks(small + big)
-    ax2.set_yticklabels(np.hstack([oecd_sma, oecd_big]))
-    ax2.set_title("Case for OECD")
-    ax2.set_xlabel("Log of millions of dollars")
-
-    fig.show()
-
-    return None
+    return best_spec
