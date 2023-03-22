@@ -8,7 +8,16 @@ This repository hosts the code used to create the [SLIIDERS](https://doi.org/10.
 
 ## Installation
 
-Most users will want to just use the datasets directly, accessible at the DOIs linked above. If you wish to recreate and/or modify the datasets, which we encourage, you will need to run the Jupyter notebooks in this repository. A collection of helper functions, organized into a Python package, is necessary to run the notebooks and can be found within the `sliiders` directory. A simple pip install will install this package
+Most users will want to just use the datasets directly, accessible at the DOIs linked above. If you wish to recreate and/or modify the datasets, which we encourage, you will need to run the Jupyter notebooks in this repository.
+
+A first step is to create a conda environment with the necessary packages. First install [mamba](https://mamba.readthedocs.io/en/latest/) and then, from the root directory of this repo, run
+
+```bash
+mamba env create -f environment/environment.yml
+mamba activate sliiders
+```
+
+Next, a collection of helper functions, organized into a Python package, is necessary to run the notebooks and can be found within the `sliiders` directory. A simple pip install will install this package
 
 ```bash
 pip install -e sliiders
@@ -59,6 +68,7 @@ We encourage community contributions. At the moment, we have no contribution tem
 ## Authors
 
 The original authors of this code include:
+
 * Daniel Allen
 * Ian Bolliger
 * Junho Choi

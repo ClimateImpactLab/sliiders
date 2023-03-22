@@ -8,9 +8,7 @@ import rasterio
 import rioxarray as rio
 import xarray as xr
 
-from sliiders.settings import CRED_PATH
-
-CRED_PATH_STR = str(CRED_PATH)
+from sliiders.settings import STORAGE_OPTIONS
 
 
 def read_gdf(fpath):
@@ -50,19 +48,15 @@ def save(obj, path, *args, **kwargs):
         meth = "to_parquet"
     else:
         raise ValueError(type(obj))
-    getattr(obj, meth)(
-        str(path), *args, storage_options={"token": CRED_PATH_STR}, **kwargs
-    )
+    getattr(obj, meth)(str(path), *args, storage_options=STORAGE_OPTIONS, **kwargs)
 
 
 def open_zarr(path, **kwargs):
-    return xr.open_zarr(str(path), storage_options={"token": CRED_PATH_STR}, **kwargs)
+    return xr.open_zarr(str(path), storage_options=STORAGE_OPTIONS, **kwargs)
 
 
 def read_parquet_dask(path, **kwargs):
-    return ddf.read_parquet(
-        str(path), storage_options={"token": CRED_PATH_STR}, **kwargs
-    )
+    return ddf.read_parquet(str(path), storage_options=STORAGE_OPTIONS, **kwargs)
 
 
 def _fuseify(path):
