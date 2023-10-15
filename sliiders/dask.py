@@ -4,7 +4,10 @@ from distributed.diagnostics.plugin import UploadDirectory
 
 from sliiders import __file__ as sliiders_path
 
+import uuid
+import sys
 
+            
 def upload_sliiders(client, restart_client=True):
     """Upload a local package to Dask Workers. After calling this function, the package
     contained at ``pkg_dir`` will be available on all workers in your Dask cluster,
@@ -20,7 +23,7 @@ def upload_sliiders(client, restart_client=True):
     **kwargs
         Passed directly to :py:class:`distributed.diagnostics.plugin.UploadDirectory`
     """
-    client.register_worker_plugin(
+    client.register_plugin(
         UploadDirectory(
             Path(sliiders_path).parents[1],
             update_path=True,

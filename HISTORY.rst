@@ -1,6 +1,12 @@
 History
 =======
 
+v1.1.2
+------
+* Add specific package version pins to environment.yml
+* Update `spatial.py` and `notebooks/data-processing/2-present-day-exposure/03-create-segment-regions` to account for some package API changes
+* Save two additional vector datasets: Region linestrings and region Voronoi polygons
+
 v1.1.1
 ------
 * Update settings file for local development
