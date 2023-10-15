@@ -1741,12 +1741,7 @@ def get_voronoi_regions(full_regions):
 
     out_cols = [c for c in full_regions.columns if c != "geometry"]
 
-    # avoiding GeoDataFrame.explode until geopandas v0.10.3 b/c of
-    # https://github.com/geopandas/geopandas/issues/2271
-    # region_polys = full_regions.explode(index_parts=False)
-    region_polys = full_regions.drop(columns="geometry").join(
-        full_regions.geometry.explode(index_parts=False)
-    )
+    region_polys = full_regions.explode(index_parts=False)
 
     print("...Subdividing region grid to ease computation")
     gridded_gdf, all_oc = grid_gdf(region_polys)
@@ -1758,7 +1753,7 @@ def get_voronoi_regions(full_regions):
     vor_gdf = get_spherical_voronoi_gser(pts).to_frame()
 
     vor_shapes = pygeos.from_shapely(vor_gdf["geometry"])
-    all_gridded = pygeos.from_shapely(gridded_gdf["geometry"])
+    all_gridded = gridded_gdf["geometry"].values
 
     tree = pygeos.STRtree(all_gridded)
 
@@ -2285,8 +2280,9 @@ def get_coastlines_by_iso(coastlines, regions_voronoi, plot=True):
 
     # Check output
     if plot:
-        coastlines.reset_index(drop=False).plot(
-            color=add_rand_color(coastlines, col="ISO"), figsize=(20, 20)
+        tmp = out.reset_index(drop=False)
+        tmp.plot(
+            color=add_rand_color(tmp, col="ISO"), figsize=(20, 20)
         )
 
     return out
@@ -2388,6 +2384,7 @@ def create_overlay_voronois(
     # Generate global Voronoi shapes for regions
     print("Generating global Voronoi shapes for regions...")
     reg_vor = get_voronoi_regions(regions)
+
     adm0 = reg_vor.dissolve("ISO")
 
     # Assign ISO to seg centroids based on country Voronoi
@@ -2438,7 +2435,7 @@ def create_overlay_voronois(
     out = _drop_tiny(out, min_sq_degrees, overlay_name)
     adm0 = _drop_tiny(adm0, min_sq_degrees, "ISO")
 
-    return out, adm0
+    return out, adm0, coastal_segs
 
 
 def _drop_tiny(df, min_sq_degrees, colname):
