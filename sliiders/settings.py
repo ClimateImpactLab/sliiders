@@ -103,6 +103,7 @@ PATH_GEOG_GTSM_SNAPPED = (
 PATH_SEG_PTS_MANUAL = DIR_GEOG_INT / "ciam_segment_pts_manual_adds.parquet"
 
 PATH_SEG_CENTROIDS = DIR_GEOG_INT / "gtsm_stations_thinned_ciam.parquet"
+PATH_SEGS = DIR_GEOG_INT / "coastal_segments.parquet"
 
 PATH_GEOG_COASTLINES = DIR_GEOG_INT / "ne_coastline_lines_CIAM_wexp_or_gtsm_10m.parquet"
 
@@ -118,6 +119,7 @@ PATH_GEOG_GTSM_STATIONS_TOTHIN = (
 )
 
 DIR_CIAM_VORONOI = DIR_GEOG_INT / "seg_region_intersections" / EXPOSURE_BINNED_VERS
+PATH_SEG_VORONOI = DIR_CIAM_VORONOI / "seg.parquet"
 PATH_SEG_REGION_VORONOI_INTERSECTIONS = (
     DIR_CIAM_VORONOI / "seg_region_intersections.parquet"
 )
