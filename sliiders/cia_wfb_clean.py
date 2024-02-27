@@ -23,10 +23,10 @@ REGIONS_TO_SKIP_CIA_WFB = [
 ]
 
 CIA_WFB_CURRENT_BASE_URL = "https://www.cia.gov/the-world-factbook"
-CIA_WFB_2021_BASE_URL = CIA_WFB_CURRENT_BASE_URL + "/about/archives/2021"
+CIA_WFB_RECENT_BASE_URL = CIA_WFB_CURRENT_BASE_URL + "/about/archives/{year}"
 fields = ["population", "real-gdp-purchasing-power-parity", "real-gdp-per-capita"]
 CIA_WFB_CURRENT_URLS = [CIA_WFB_CURRENT_BASE_URL + "/field/" + i for i in fields]
-CIA_WFB_2021_URLS = [CIA_WFB_2021_BASE_URL + "/field/" + i for i in fields]
+CIA_WFB_RECENT_URLS = [CIA_WFB_RECENT_BASE_URL + "/field/" + i for i in fields]
 
 
 def helper_wfb_million_cleaner(string):
@@ -1407,7 +1407,7 @@ def organize_cia_wfb_2020(
     return pop_collect, gdp_collect, gdppc_collect
 
 
-def organize_cia_wfb_2021_2022(year):
+def organize_cia_wfb_post_2020(year, current_year=2024):
     """Organizes the population, GDP, and GDP per capita information from the CIA World
     Factbook (WFB) version 2022 (latest as of 2022/04/12) into `pandas.DataFrame` format
 
@@ -1429,31 +1429,46 @@ def organize_cia_wfb_2021_2022(year):
         designated by the column `usd_year`)
     """
 
-    if year == 2021:
-        urls = CIA_WFB_2021_URLS
-    elif year == 2022:
+    if year == current_year:
         urls = CIA_WFB_CURRENT_URLS
+    elif year > 2020:
+        urls = [i.format(year=year) for i in CIA_WFB_RECENT_URLS]
     else:
         raise ValueError(year)
+
+    if year <= 2022:
+        finder = ["li"]
+        nested = True
+    else:
+        finder = ["div", {"class": "pb30"}]
+        nested = False
 
     soups = [BSoup(requests.get(url).content, "html.parser") for url in urls]
 
     # population
-    lines = soups[0].find_all("li")
+    lines = soups[0].find_all(finder)
     pop_collect = []
     for li in lines:
-        value = li.find_all("p")
-        if len(value) == 0:
-            continue
+        if nested:
+            value = li.find_all("p")
+            if len(value) == 0:
+                continue
+            value = value[0]
+        else:
+            if "est." not in li.text or li.attrs.get("class") == ["category_data"]:
+                continue
+            value = li
         country = li.find("a").text
         if (
             (country in ["Akrotiri", "Dhekelia", "European Union"])
-            or ("uninhabited" in value[0].text)
-            or ("no indige" in value[0].text)
+            or ("uninhabited" in value.text)
+            or ("no indige" in value.text)
         ):
             continue
-
-        value = value[0].text.split("(")
+        text = value.text
+        if text[:len(country)] == country:
+            text = text[len(country):]
+        value = text.split("(")
 
         num = helper_wfb_million_cleaner(value[0])
 
@@ -1472,19 +1487,29 @@ def organize_cia_wfb_2021_2022(year):
     ]
     gdp_collect, gdppc_collect = [], []
     for i, soup in enumerate(soups[1:]):
-        lines = soup.find_all("li")
+        lines = soup.find_all(finder)
         for li in lines:
-            value = li.find_all("p")
-            if len(value) == 0:
-                continue
+            if nested:
+                value = li.find_all("p")
+                if len(value) == 0:
+                    continue
+                value = value[0]
+            else:
+                if "est." not in li.text or li.attrs.get("class") == ["category_data"]:
+                    continue
+                value = li
             country = li.find("a").text
             if country in ["Akrotiri", "Dhekelia"]:
                 continue
 
-            if ("NA" in value[0].text) or ("see entry for" in value[0].text):
+            if ("NA" in value.text) or ("see entry for" in value.text):
                 continue
+                
+            text = value.text
+            if text[:len(country)] == country:
+                text = text[len(country):]
 
-            value = re.sub(r"|".join(swap_phrases), "", value[0].text)
+            value = re.sub(r"|".join(swap_phrases), "", text)
 
             if country == "North Macedonia":
                 value = re.split(r"\(|\)", value.split("; Macedonia has a large")[0])
@@ -1539,7 +1564,7 @@ def organize_cia_wfb_2021_2022(year):
 
             if (note_in == 0) and (len(usd_year_from_note) > 0):
                 usd_year = int(
-                    re.sub(r"[a-zA-Z]|\:|\.", "", usd_year_from_note).strip()
+                    re.sub(r"[a-zA-Z]|\:|\.", "", usd_year_from_note).strip(" -")
                 )
                 usd_years = [usd_year] * len(years_cleaned)
 
@@ -1565,7 +1590,7 @@ def organize_cia_wfb_2021_2022(year):
     return pop_collect, gdp_collect, gdppc_collect
 
 
-def organize_gather_cia_wfb_2000_2022(
+def organize_gather_cia_wfb(
     home_dir, ccode_mapping, years=list(range(2000, 2023))
 ):
     """Cleaning all CIA WFB versions, from 2000 to 2022, and gathering them in list
@@ -1592,9 +1617,9 @@ def organize_gather_cia_wfb_2000_2022(
     """
 
     years = np.sort(years)
-    assert (years.max() <= 2022) and (
+    assert (years.max() <= 2024) and (
         years.min() >= 2000
-    ), "Only cleans versions 2000 to 2020."
+    ), "Only cleans versions 2000 to 2024."
 
     cia_gdp_gather = []
     cia_pop_gather = []
@@ -1621,8 +1646,8 @@ def organize_gather_cia_wfb_2000_2022(
             pop_df, gdp_df, gdppc_df = organize_cia_wfb_2018_2019(directory)
         elif yr == 2020:
             pop_df, gdp_df, gdppc_df = organize_cia_wfb_2020(directory)
-        elif yr in [2021, 2022]:
-            pop_df, gdp_df, gdppc_df = organize_cia_wfb_2021_2022(yr)
+        elif yr in [2021, 2022, 2023, 2024]:
+            pop_df, gdp_df, gdppc_df = organize_cia_wfb_post_2020(yr)
         else:
             raise ValueError(yr)
 
