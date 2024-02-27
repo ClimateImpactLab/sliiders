@@ -13,7 +13,6 @@ import pygeos
 import shapely as shp
 import xarray as xr
 from numba import jit
-from pyinterp.backends.xarray import Grid2D
 from scipy.spatial import SphericalVoronoi, cKDTree
 from shapely.geometry import (
     GeometryCollection,
@@ -291,7 +290,7 @@ def fill_in_gaps(gser):
     if isinstance(current_coverage, Polygon):
         current_coverage = MultiPolygon([current_coverage])
 
-    assert all([g.type == "Polygon" for g in current_coverage.geoms])
+    assert all([g.geom_type == "Polygon" for g in current_coverage.geoms])
 
     intersects_missing_mask = gser.intersects(current_coverage)
     intersects_missing = gser[intersects_missing_mask].copy().to_frame(name="geometry")
@@ -1721,7 +1720,7 @@ def remove_already_attributed_land_from_vor(
             remaining = vor_shapes[ix]
         calculated.append(remaining)
 
-    return gpd.GeoSeries(calculated, crs=crs)
+    return gpd.GeoSeries(pygeos.to_shapely(calculated), crs=crs)
 
 
 def get_voronoi_regions(full_regions):
@@ -1762,8 +1761,8 @@ def get_voronoi_regions(full_regions):
     gridded_uid = np.take(gridded_gdf.index.values, existing)
     vor_uid = np.take(vor_gdf.index.values, vor_ix)
 
-    print("...Revmoving already attributed land from voronoi")
-    vor_gdf["calculated"] = remove_already_attributed_land_from_vor(
+    print("...Removing already attributed land from voronoi")
+    vor_gdf["calculated"] = gpd.GeoSeries(remove_already_attributed_land_from_vor(
         vor_shapes,
         all_gridded,
         vor_ix,
@@ -1771,7 +1770,7 @@ def get_voronoi_regions(full_regions):
         vor_uid,
         gridded_uid,
         crs=full_regions.crs,
-    ).values
+    ).values, crs=4326, index=vor_gdf.index)
 
     print("...stitching Voronoi with already attributed land")
     full_regions = full_regions.join(vor_gdf.drop(columns="geometry"), how="left")
@@ -1808,20 +1807,21 @@ def get_points_along_segments(segments, tolerance=DENSIFY_TOLERANCE):
         GeoDataFrame of resulting endpoints and interpolated points, with same
         non-geometry columns as ``segments``.
     """
-
-    segments = segments[~segments.geometry.type.isnull()].copy()
+    assert segments.geometry.type.notnull().all()
 
     # avoiding GeoDataFrame.explode until geopandas v0.10.3 b/c of
     # https://github.com/geopandas/geopandas/issues/2271
     # segments = segments.explode(index_parts=False)
-    segments = segments.drop(columns="geometry").join(
+    segments = gpd.GeoDataFrame(segments.drop(columns="geometry").join(
         segments.geometry.explode(index_parts=False)
-    )
+    ), geometry="geometry")
 
     segments = segments[~segments["geometry"].is_empty].copy()
 
-    segments["geometry"] = pygeos.segmentize(
-        pygeos.from_shapely(segments["geometry"]), tolerance
+    segments["geometry"] = gpd.GeoSeries(
+        pygeos.to_shapely(pygeos.segmentize(pygeos.from_shapely(segments.geometry), 0.01)),
+        crs=segments.crs,
+        index=segments.index
     )
 
     pts, pts_ix = pygeos.get_coordinates(
@@ -2143,7 +2143,7 @@ def coastlen_poly(
 
             line = lines_int.iloc[idx0]
 
-            if line.geometry.type == "MultiLineString":
+            if line.geometry.geom_type == "MultiLineString":
                 lensum += sum(
                     [line_dist(this_line) for this_line in line.geometry.geoms]
                 )
@@ -2186,7 +2186,7 @@ def simplify_coastlines(coastlines):
     linestring_ix = linestring_ix[:-1][linestring_ix[:-1] == linestring_ix[1:]]
 
     return gpd.GeoSeries(
-        tiny_segs, crs=coastlines.crs, index=coastlines.iloc[linestring_ix].index
+        pygeos.to_shapely(tiny_segs), crs=coastlines.crs, index=coastlines.iloc[linestring_ix].index
     )
 
 
@@ -2441,8 +2441,11 @@ def create_overlay_voronois(
 def _drop_tiny(df, min_sq_degrees, colname):
     """Drop voronoi regions that are smaller than our smallest input raster grid cell
     (1 arc-second)"""
-    exploded = df.sort_index().explode()
-    return exploded[exploded.area > min_sq_degrees].dissolve(colname)
+    exploded = df.sort_index().explode(index_parts=False)
+    with warnings.catch_warnings():
+        filter_spatial_warnings()
+        areas = exploded.area
+    return exploded[areas > min_sq_degrees].dissolve(colname)
 
 
 def get_country_level_voronoi_gdf(all_pts_df):
@@ -2656,7 +2659,10 @@ def interpolate_da_like(da_in, da_out):
         `da_out`
 
     """
-
+    # This import is contained within this function because pyinterp is having
+    # installation issues on remote dask workers. By installing it here, the rest of
+    # sliiders can be installed without pyinterp
+    from pyinterp.backends.xarray import Grid2D
     xx, yy = np.meshgrid(da_out.lon.values, da_out.lat.values)
     interpolator = Grid2D(da_in, geodetic=True)
     interp_out = interpolator.bicubic(coords={"lon": xx.flatten(), "lat": yy.flatten()})

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from cloudpathlib import AnyPath, GSClient
 from fsspec import filesystem
 
 ###############
@@ -9,40 +10,43 @@ from fsspec import filesystem
 ###############
 
 # Raw/Input Data
-SRTM15_PLUS_VERS = "V2.5"
 COASTALDEM_VERS = "v2.1"
-LANDSCAN_YEAR = "2021"
+LANDSCAN_YEAR = "2022"
 LANDSCAN_VERS = f"LandScan Global {LANDSCAN_YEAR}"
 GADM_VERS = "4.1"
 GADM_VERS_STR = "gadm_410"
 LITPOP_VERS = "LitPop_v1_2"
 LITPOP_DATESTAMP = "20220118"
 GEG15_VERS = "v0.1"
-PWT_DATESTAMP = "20220328"
+PWT_DATESTAMP = "20240222"
 MPD_DATESTAMP = "20220329"
-WB_WDI_DATESTAMP = "20220329"
-ALAND_STATISTICS_DATESTAMP = "20220329"
-GWDB_DATESTAMP = "20221112"
-GWDB_YEAR = 2022
-OECD_DATESTAMP = "20220919"
-UN_AMA_DATESTAMP = "20221122"
-IMF_WEO_VERS = "April_2022"
+WB_WDI_DATESTAMP = "20240222"
+ALAND_STATISTICS_DATESTAMP = "20240222"
+GWDB_DATESTAMP = "20240222"
+GWDB_YEAR = 2023
+OECD_DATESTAMP = "20240222"
+UN_AMA_DATESTAMP = "20240222"
+IMF_WEO_VERS = "October_2023"
 UN_WPP_VERS = "2022"
-CIA_WFB_VERS = "20221108"
-ADB_KI_VERS = "2022"
-NE_DOWNLOAD_VERS = "20221201"
+CIA_WFB_VERS = "20240222"
+ADB_KI_VERS = "2023"
+NE_DOWNLOAD_VERS = "20240222"
+INC_POP_AUX_DATESTAMP = "20240222"
+GMW_YEAR = 2020
+NLDB_DATESTAMP = "20240223"
 
 # intermediate data / output data versions
 MSS_DEM_VERS = "v2.1.1"
-INC_POP_CLEANED_VERS = "20221116"
-YPK_FINALIZED_VERS = "20221122"
+INC_POP_CLEANED_VERS = "20240222"
+YPK_FINALIZED_VERS = "20240222"
 EXPOSURE_BLENDED_VERS = "20221201"
-EXPOSURE_BINNED_VERS = "v0.15"
+EXPOSURE_BINNED_VERS = "20240223"
 COUNTRY_LEVEL_TABLE_VERS = "v0.10"
 DATUM_CONVERSION_VERS = "v0.3"
 ELEV_TILE_LIST_VERS = "v0.4"
-COMBINED_PROTECTED_AREAS_VERS = "v0.2"
-SLIIDERS_VERS = "v1.1"
+COMBINED_PROTECTED_AREAS_VERS = "20240223"
+SLIIDERS_VERS = "v1.2"
+COASTLINES_VERS = "20240223"
 
 ############
 # Parameters
@@ -63,7 +67,6 @@ SOCIOECONOMIC_SCALE_YR = 2019
 
 # Return periods (in years) we allow for retreat and protect standards
 SVALS = np.array([10, 100, 1000, 10000])
-
 
 #######
 # Paths
@@ -103,9 +106,8 @@ PATH_GEOG_GTSM_SNAPPED = (
 PATH_SEG_PTS_MANUAL = DIR_GEOG_INT / "ciam_segment_pts_manual_adds.parquet"
 
 PATH_SEG_CENTROIDS = DIR_GEOG_INT / "gtsm_stations_thinned_ciam.parquet"
-PATH_SEGS = DIR_GEOG_INT / "coastal_segments.parquet"
 
-PATH_GEOG_COASTLINES = DIR_GEOG_INT / "ne_coastline_lines_CIAM_wexp_or_gtsm_10m.parquet"
+PATH_GEOG_COASTLINES = DIR_GEOG_INT / f"ne_coastline_lines_CIAM_wexp_or_gtsm_10m_{COASTLINES_VERS}.parquet"
 
 DIR_NATEARTH_RAW = DIR_GEOG_RAW / "natural_earth" / NE_DOWNLOAD_VERS
 DIR_NATEARTH_INT = DIR_GEOG_INT / "natural_earth" / NE_DOWNLOAD_VERS
@@ -113,20 +115,22 @@ PATH_NATEARTH_LANDPOLYS = DIR_NATEARTH_RAW / "ne_10m_land.shp"
 PATH_NATEARTH_COASTLINES_INT = DIR_NATEARTH_INT / "coastlines.parquet"
 PATH_NATEARTH_OCEAN = DIR_NATEARTH_RAW / "ne_10m_ocean.shp"
 PATH_NATEARTH_OCEAN_NOCASPIAN = DIR_NATEARTH_INT / "ne_10m_nocaspian.parquet"
+PATH_NATEARTH_LAKES_INT = DIR_NATEARTH_INT / "inland_water.parquet"
 
 PATH_GEOG_GTSM_STATIONS_TOTHIN = (
     DIR_GEOG_RAW / "gtsm_stations_eur_tothin" / "gtsm_stations_eur_tothin.parquet"
 )
 
 DIR_CIAM_VORONOI = DIR_GEOG_INT / "seg_region_intersections" / EXPOSURE_BINNED_VERS
-PATH_SEG_VORONOI = DIR_CIAM_VORONOI / "seg.parquet"
 PATH_SEG_REGION_VORONOI_INTERSECTIONS = (
     DIR_CIAM_VORONOI / "seg_region_intersections.parquet"
 )
+PATH_SEG_VORONOI = DIR_CIAM_VORONOI / "segment_voronoi.parquet"
 
 PATH_SEG_REGION_VORONOI_INTERSECTIONS_SHP = (
     DIR_CIAM_VORONOI / "seg_region_intersections.shp"
 )
+PATH_SEGS = DIR_CIAM_VORONOI / "segment_linestrings.parquet"
 
 DIR_GADM = DIR_DATA_RAW / "gadm" / GADM_VERS_STR
 
@@ -143,9 +147,7 @@ PATH_EXPOSURE_ASSET_VALUE_BLENDED = (
     / "LitPop_pc_30arcsec.parquet"
 )
 
-DIR_HYDROBASINS_RAW = DIR_DATA_RAW / "hydrosheds" / "hydrobasins"
-
-PATH_NLDB = DIR_EXPOSURE_RAW / "protected_areas" / "usa" / "nldb-levee-areas.parquet"
+PATH_NLDB = DIR_EXPOSURE_RAW / "protected_areas" / "usa" / f"nldb-levee-areas_{NLDB_DATESTAMP}.parquet"
 PATH_COMBINED_PROTECTED_AREAS = (
     DIR_EXPOSURE_INT
     / "protected_areas"
@@ -160,14 +162,14 @@ PATH_GLOBCOVER_2009 = (
     / "GLOBCOVER_L4_200901_200912_V2.3.tif"
 )
 
-PATH_GLOBAL_MANGROVES = DIR_WETLANDS_RAW / "GMW_v3_2016" / "00_Data" / "gmw_v3_2016.shp"
+PATH_GLOBAL_MANGROVES = DIR_WETLANDS_RAW / f"GMW_{GMW_YEAR}" / f"gmw_v3_{GMW_YEAR}_vec.shp"
 
 PATH_WETLANDS_INT = DIR_WETLANDS_INT / "wetlands.shp"
 
 DIR_ELEVATION_RAW = DIR_DATA_RAW / "raw"
 DIR_ELEVATION_INT = DIR_DATA_INT / "int"
 
-PATH_SRTM15_PLUS = DIR_ELEVATION_RAW / "srtm15_plus" / f"SRTM15_{SRTM15_PLUS_VERS}.nc"
+PATH_GEBCO_RAW = DIR_ELEVATION_RAW / "gebco_2023" / "gebco_2023.zip"
 DIR_ELEV_MSS = DIR_ELEVATION_INT / "coastalDEM_mss_corrected"
 PATH_ELEV_MSS = DIR_ELEV_MSS / f"coastalDEM_mss_corrected_{MSS_DEM_VERS}.zarr"
 PATH_HYDCON_TILE_CONNECTIONS = (
@@ -266,24 +268,24 @@ DIR_ALAND_STATISTICS_RAW = DIR_YPK_RAW / "asub" / ALAND_STATISTICS_DATESTAMP
 
 DIR_GLOBAL_WEALTH_INT = DIR_YPK_INT / "global_wealth_databook"
 PATH_GWDB_RAW = (
-    DIR_YPK_RAW / "gwdb" / GWDB_DATESTAMP / "global-wealth-databook-2022.pdf"
+    DIR_YPK_RAW / "gwdb" / GWDB_DATESTAMP / "global-wealth-databook-2023.pdf"
 )
 PATH_GWDB_INT = DIR_GLOBAL_WEALTH_INT / f"gwdb_{GWDB_YEAR}.parquet"
 
-PATH_PWT_RAW = DIR_YPK_RAW / "pwt" / PWT_DATESTAMP / "pwt_100.xlsx"
-PATH_IMF_WEO_RAW = DIR_YPK_RAW / "imf_weo" / IMF_WEO_VERS / "WEO_iy_ratio_pop_gdp.xlsx"
+PATH_PWT_RAW = DIR_YPK_RAW / "pwt" / PWT_DATESTAMP / "pwt.xlsx"
+PATH_IMF_WEO_RAW = DIR_YPK_RAW / "imf_weo" / IMF_WEO_VERS / "WEO_iy_ratio_pop_gdp.xls"
 PATH_MPD_RAW = DIR_YPK_RAW / "mpd" / MPD_DATESTAMP / "maddison_project.xlsx"
 
 PATH_ADB_RAW = (
-    DIR_YPK_RAW / "adb" / ADB_KI_VERS / f"ki-{ADB_KI_VERS}-economy-tables.xlsx"
+    DIR_YPK_RAW / "adb" / ADB_KI_VERS / f"ki-{ADB_KI_VERS}-economy-tables_0.xlsx"
 )
 
 PATH_GW_TABLE = DIR_YPK_RAW / "gwstates.rda"
 PATH_FARISS = DIR_YPK_RAW / "Fariss_JCR_2022.zip"
 DIR_FARISS_INT = DIR_YPK_INT / "Fariss_JCR_2022"
 
-PATH_INC_POP_AUX = DIR_YPK_INT / "various_auxiliary_sources_yp.parquet"
-PATH_INC_POP_AGG = DIR_YPK_INT / "aggregated_sources_yp.parquet"
+PATH_INC_POP_AUX = DIR_YPK_INT / f"various_auxiliary_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
+PATH_INC_POP_AGG = DIR_YPK_INT / f"aggregated_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
 PATH_INC_POP_CLEANED = (
     DIR_YPK_INT
     / f"yp_{HISTORICAL_YEARS[0]}_{HISTORICAL_YEARS[-1]}_cleaned_{INC_POP_CLEANED_VERS}"

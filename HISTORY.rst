@@ -1,6 +1,23 @@
 History
 =======
 
+v1.2
+----
+* Ensure population/asset value is kept out of inland water bodies
+* Update input data
+  * Landscan 2021 -> 2022
+  * PWT 10.0 -> 10.01
+  * World Bank WDI 03/2022 -> 02/2024
+  * Aland Statistics 03/2022 -> 02/2024
+  * Global Wealth Databook 2022 -> 2023
+  * OECD Regional Data 09/2022 -> 02/2024
+  * UN AMA 11/2022 -> 02/2024
+  * IMF WEO 04/2022 -> 10/2023
+  * CIA World Factbook 2022 -> 2024
+  * Asian Development Bank Key Indicators 2022 -> 2023
+  * Natural Earth 12/2022 -> 02/2024
+  * SRTM15+ -> GEBCO 2023
+
 v1.1.2
 ------
 * Add specific package version pins to environment.yml

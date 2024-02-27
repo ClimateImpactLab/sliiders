@@ -997,7 +997,7 @@ def fill_ratio_nominal_gdppc(
         so = "UN(not_PPP)"
     elif y_nom_col == "cia_rgdpna_pc":
         so = "CIA"
-    yiso_df["gdppc_source"] = np.nan
+    yiso_df["gdppc_source"] = ""
     for i, iso in enumerate(y_ctries):
         xiso = x_ctries[i]
         if xiso == FRA_OVERSEAS_DEPT:
@@ -1024,6 +1024,7 @@ def fill_ratio_nominal_gdppc(
 
 
 def bertram_sse_helper(Y_tr, Y_te, X_tr, X_te, spec, yvar):
+    
     modelfit = sm.OLS(Y_tr[yvar], sm.add_constant(X_tr[spec])).fit()
     Y_pred = modelfit.predict(sm.add_constant(X_te[spec]))
     sse = np.sum((Y_te[yvar].values - Y_pred.values) ** 2)
