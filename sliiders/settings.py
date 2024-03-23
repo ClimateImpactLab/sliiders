@@ -2,7 +2,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from cloudpathlib import AnyPath, GSClient
 from fsspec import filesystem
 
 ###############
@@ -107,7 +106,9 @@ PATH_SEG_PTS_MANUAL = DIR_GEOG_INT / "ciam_segment_pts_manual_adds.parquet"
 
 PATH_SEG_CENTROIDS = DIR_GEOG_INT / "gtsm_stations_thinned_ciam.parquet"
 
-PATH_GEOG_COASTLINES = DIR_GEOG_INT / f"ne_coastline_lines_CIAM_wexp_or_gtsm_10m_{COASTLINES_VERS}.parquet"
+PATH_GEOG_COASTLINES = (
+    DIR_GEOG_INT / f"ne_coastline_lines_CIAM_wexp_or_gtsm_10m_{COASTLINES_VERS}.parquet"
+)
 
 DIR_NATEARTH_RAW = DIR_GEOG_RAW / "natural_earth" / NE_DOWNLOAD_VERS
 DIR_NATEARTH_INT = DIR_GEOG_INT / "natural_earth" / NE_DOWNLOAD_VERS
@@ -147,7 +148,12 @@ PATH_EXPOSURE_ASSET_VALUE_BLENDED = (
     / "LitPop_pc_30arcsec.parquet"
 )
 
-PATH_NLDB = DIR_EXPOSURE_RAW / "protected_areas" / "usa" / f"nldb-levee-areas_{NLDB_DATESTAMP}.parquet"
+PATH_NLDB = (
+    DIR_EXPOSURE_RAW
+    / "protected_areas"
+    / "usa"
+    / f"nldb-levee-areas_{NLDB_DATESTAMP}.parquet"
+)
 PATH_COMBINED_PROTECTED_AREAS = (
     DIR_EXPOSURE_INT
     / "protected_areas"
@@ -162,7 +168,9 @@ PATH_GLOBCOVER_2009 = (
     / "GLOBCOVER_L4_200901_200912_V2.3.tif"
 )
 
-PATH_GLOBAL_MANGROVES = DIR_WETLANDS_RAW / f"GMW_{GMW_YEAR}" / f"gmw_v3_{GMW_YEAR}_vec.shp"
+PATH_GLOBAL_MANGROVES = (
+    DIR_WETLANDS_RAW / f"GMW_{GMW_YEAR}" / f"gmw_v3_{GMW_YEAR}_vec.shp"
+)
 
 PATH_WETLANDS_INT = DIR_WETLANDS_INT / "wetlands.shp"
 
@@ -284,8 +292,12 @@ PATH_GW_TABLE = DIR_YPK_RAW / "gwstates.rda"
 PATH_FARISS = DIR_YPK_RAW / "Fariss_JCR_2022.zip"
 DIR_FARISS_INT = DIR_YPK_INT / "Fariss_JCR_2022"
 
-PATH_INC_POP_AUX = DIR_YPK_INT / f"various_auxiliary_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
-PATH_INC_POP_AGG = DIR_YPK_INT / f"aggregated_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
+PATH_INC_POP_AUX = (
+    DIR_YPK_INT / f"various_auxiliary_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
+)
+PATH_INC_POP_AGG = (
+    DIR_YPK_INT / f"aggregated_sources_yp_{INC_POP_AUX_DATESTAMP}.parquet"
+)
 PATH_INC_POP_CLEANED = (
     DIR_YPK_INT
     / f"yp_{HISTORICAL_YEARS[0]}_{HISTORICAL_YEARS[-1]}_cleaned_{INC_POP_CLEANED_VERS}"
