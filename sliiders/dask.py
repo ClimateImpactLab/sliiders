@@ -1,39 +1,35 @@
+import os
 from pathlib import Path
+from zipfile import ZipFile
 
-from distributed.diagnostics.plugin import UploadDirectory
-
-from sliiders import __file__ as sliiders_path
-
-import uuid
-import sys
 from dask_gateway import GatewayCluster
-from dask.distributed import PipInstall
+
 import sliiders
 
-import os
-from zipfile import ZipFile
 
 def _zipdir(path, zip_filename):
     # ziph is zipfile handle
 
     # Create a ZIP file
-    with ZipFile(zip_filename, 'w') as ziph:
+    with ZipFile(zip_filename, "w") as ziph:
         for root, dirs, files in os.walk(path):
             for file in files:
                 # Create a relative path for files to preserve the directory structure
                 # within the ZIP archive. This relative path is based on the directory
                 # being zipped, so files are stored in the same structure.
-                relative_path = os.path.relpath(os.path.join(root, file), os.path.join(path, '..'))
+                relative_path = os.path.relpath(
+                    os.path.join(root, file), os.path.join(path, "..")
+                )
                 ziph.write(os.path.join(root, file), arcname=relative_path)
+
 
 def start_cluster(idle_timeout=3600, n_workers=None, profile="micro"):
     cluster = GatewayCluster(idle_timeout=idle_timeout, profile=profile)
     client = cluster.get_client()
-    plugin = PipInstall(packages=["cloudpathlib", "pandas-datareader", "openpyxl", "xlrd", "dask-geopandas", "pyreadr", "pypdf2", "isort", "regionmask", "pygeos", "pyogrio"])
-    client.register_plugin(plugin)
     upload_sliiders(client)
     return client, cluster
-            
+
+
 def upload_sliiders(client, restart_client=True):
     """Upload a local package to Dask Workers. After calling this function, the package
     contained at ``pkg_dir`` will be available on all workers in your Dask cluster,
@@ -50,6 +46,6 @@ def upload_sliiders(client, restart_client=True):
         Passed directly to :py:class:`distributed.diagnostics.plugin.UploadDirectory`
     """
     package_dir = Path(sliiders.__file__).parent
-    zip_filename = '/tmp/sliiders.zip' # Output ZIP file name
+    zip_filename = "/tmp/sliiders.zip"  # Output ZIP file name
     _zipdir(package_dir, zip_filename)
     client.upload_file(zip_filename)
