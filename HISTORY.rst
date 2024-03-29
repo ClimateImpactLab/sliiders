@@ -1,6 +1,10 @@
 History
 =======
 
+unreleased
+----------
+* Drop usage of deprecated pyGEOS and rely on Shapely 2.x
+
 v1.2
 ----
 * Ensure population/asset value is kept out of inland water bodies

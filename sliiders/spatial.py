@@ -9,7 +9,6 @@ import matplotlib._color_data as mcd
 import networkx as nx
 import numpy as np
 import pandas as pd
-import pygeos
 import shapely as shp
 import xarray as xr
 from numba import jit
@@ -318,10 +317,10 @@ def fill_in_gaps(gser):
                 new_buffers, index=intersects_missing.index, crs=intersects_missing.crs
             ).buffer(0.00001)
             use_new_buffer_mask = intersects_missing["new_buffer"].geometry.area > 0
-        intersects_missing.loc[
-            use_new_buffer_mask, "geometry"
-        ] = intersects_missing.loc[use_new_buffer_mask, "geometry"].union(
-            intersects_missing.loc[use_new_buffer_mask, "new_buffer"]
+        intersects_missing.loc[use_new_buffer_mask, "geometry"] = (
+            intersects_missing.loc[use_new_buffer_mask, "geometry"].union(
+                intersects_missing.loc[use_new_buffer_mask, "new_buffer"]
+            )
         )
 
     assert current_coverage.area == 0
@@ -342,8 +341,8 @@ def get_polys_in_box(all_polys, lx, ly, ux, uy):
 
     Parameters
     ----------
-    all_polys : pygeos.Geometry
-        Array of pygeos Polygons
+    all_polys : array(shapely.Polygon)
+        Array of Polygons
 
     lx : float
         Left (western) bound of box
@@ -359,29 +358,26 @@ def get_polys_in_box(all_polys, lx, ly, ux, uy):
 
     Returns
     -------
-    vertical_slab : pygeos.Geometry
-        List of the pygeos polygons from `all_polys` overlapped with (cut by)
-        the box.
+    vertical_slab : list(shapely.Geometry)
+        List of the polygons from `all_polys` overlapped with (cut by) the box.
 
     slab_polys : np.array
         List of indices from `all_polys` corresponding to the polygons in
         `vertical_slab`.
     """
 
-    vertical_slab = pygeos.clip_by_rect(all_polys, lx, ly, ux, uy)
+    vertical_slab = shp.clip_by_rect(all_polys, lx, ly, ux, uy)
 
-    poly_found_mask = ~pygeos.is_empty(vertical_slab)
+    poly_found_mask = ~shp.is_empty(vertical_slab)
     slab_polys = np.where(poly_found_mask)
 
     vertical_slab = vertical_slab[poly_found_mask]
 
     # invalid shapes may occur from Polygons being cut into what should be MultiPolygons
-    not_valid = ~pygeos.is_valid(vertical_slab)
-    vertical_slab[not_valid] = pygeos.make_valid(vertical_slab[not_valid])
+    not_valid = ~shp.is_valid(vertical_slab)
+    vertical_slab[not_valid] = shp.make_valid(vertical_slab[not_valid])
 
-    vertical_slab_shapely = pygeos.to_shapely(vertical_slab)
-    vertical_slab_shapely = [strip_line_interiors(p) for p in vertical_slab_shapely]
-    vertical_slab = pygeos.from_shapely(vertical_slab_shapely)
+    vertical_slab = np.array([strip_line_interiors(p) for p in vertical_slab])
 
     return vertical_slab, slab_polys
 
@@ -398,7 +394,7 @@ def grid_gdf(
     index.
 
     Note: This may be deprecated in a future version if something like this
-    becomes available: https://github.com/pygeos/pygeos/pull/256
+    becomes available: https://github.com/libgeos/geos/issues/717
 
     Parameters
     ----------
@@ -416,15 +412,13 @@ def grid_gdf(
     gridded_gdf : geopandas.GeoDataFrame
         GeoDataFrame containing `orig_gdf` geometries divided into grid cells.
 
-    all_oc : pygeos.Geometry
-        List of pygeos Polygons corresponding to the "ocean" shapes in each
-        grid cell. Ocean shapes are defined as areas not covered by any
-        geometry in `orig_gdf`.
+    all_oc : list(shapely.Geometry)
+        List of Polygons corresponding to the "ocean" shapes in each grid cell.
+        Ocean shapes are defined as areas not covered by any geometry in `orig_gdf`.
     """
 
     if isinstance(orig_gdf, gpd.GeoSeries):
         orig_gdf = orig_gdf.to_frame(name="geometry")
-    orig_geos = pygeos.from_shapely(orig_gdf.geometry)
 
     llon, llat, ulon, ulat = orig_gdf.total_bounds
 
@@ -436,16 +430,18 @@ def grid_gdf(
         iterator = tqdm(iterator)
     for lx in iterator:
         ux = lx + box_size
-        vertical_slab, slab_polys = get_polys_in_box(orig_geos, lx, llat, ux, ulat)
+        vertical_slab, slab_polys = get_polys_in_box(
+            orig_gdf.geometry, lx, llat, ux, ulat
+        )
         for ly in np.arange(llat - 1, ulat + 1, box_size):
             uy = ly + box_size
-            res = pygeos.clip_by_rect(vertical_slab, lx, ly, ux, uy)
-            polygon_found_mask = ~pygeos.is_empty(res)
+            res = shp.clip_by_rect(vertical_slab, lx, ly, ux, uy)
+            polygon_found_mask = ~shp.is_empty(res)
             res = res[polygon_found_mask]
             # invalid shapes may occur from Polygons being cut into what should be
             # MultiPolygons
-            not_valid = ~pygeos.is_valid(res)
-            res[not_valid] = pygeos.make_valid(res[not_valid])
+            not_valid = ~shp.is_valid(res)
+            res[not_valid] = shp.make_valid(res[not_valid])
             ix = np.take(slab_polys, np.where(polygon_found_mask))
             if res.shape[0] > 0:
                 boxes.append(res)
@@ -453,17 +449,15 @@ def grid_gdf(
 
             if res.shape[0] > 0:
 
-                this_uu = pygeos.union_all(res)
+                this_uu = shp.union_all(res)
 
-                this_oc = pygeos.difference(
-                    pygeos.from_shapely(box(lx, ly, ux, uy)), this_uu
-                )
+                this_oc = shp.difference(box(lx, ly, ux, uy), this_uu)
 
-                oc_parts = pygeos.get_parts(this_oc)
+                oc_parts = shp.get_parts(this_oc)
                 all_oc += list(oc_parts)
 
             else:
-                this_oc = pygeos.from_shapely(box(lx, ly, ux, uy))
+                this_oc = box(lx, ly, ux, uy)
                 all_oc.append(this_oc)
 
     geom_ix = np.concatenate(ixs, axis=1).flatten()
@@ -473,7 +467,7 @@ def grid_gdf(
     gridded_gdf["geometry"] = geom
 
     all_oc = np.array(all_oc)
-    all_oc = all_oc[~pygeos.is_empty(all_oc)]
+    all_oc = all_oc[~shp.is_empty(all_oc)]
 
     return gridded_gdf, all_oc
 
@@ -517,11 +511,10 @@ def divide_pts_into_categories(
     pt_gadm_ids : np.ndarray
         1D array representing N IDs corresponding to `pts`.
 
-    all_oc : pygeos.Geometry
-        List of pygeos Polygons corresponding to the "ocean" shapes in each
-        grid cell. Ocean shapes should be defined as areas not covered by any
-        geometry in the set of shapes represented here by their component
-        points.
+    all_oc : list(shapely.Geometry)
+        List of Polygons corresponding to the "ocean" shapes in each grid cell.
+        Ocean shapes should be defined as areas not covered by any geometry in
+        the set of shapes represented here by their component points.
 
     tolerance : float
         Maximum distance from one point to a point with a different ID for the
@@ -544,7 +537,7 @@ def divide_pts_into_categories(
     at_blank_tolerance = at_blank_tolerance + (at_blank_tolerance / 10)
     tolerance = tolerance + (tolerance / 10)
 
-    tree = cKDTree(pygeos.get_coordinates(all_oc))
+    tree = cKDTree(shp.get_coordinates(all_oc))
 
     batch_size = int(1e6)
     starts = np.arange(0, pts.shape[0], batch_size)
@@ -700,7 +693,7 @@ def explode_gdf_to_pts(geo_array, id_array, rounding_decimals=ROUND_INPUT_POINTS
     Parameters
     ----------
     geo_array : :py:class:`numpy.ndarray`
-        Array of ``pygeos`` geometries
+        Array of ``shapely`` geometries
 
     id_array : :py:class:`numpy.ndarray`
         List of IDs corresponding to shapes in `geo_array`
@@ -715,11 +708,11 @@ def explode_gdf_to_pts(geo_array, id_array, rounding_decimals=ROUND_INPUT_POINTS
     pt_ids : np.ndarray
         1D array of IDs corresponding to ``pts``.
     """
-    counts = np.array([pygeos.count_coordinates(poly) for poly in geo_array])
+    counts = np.array([shp.count_coordinates(poly) for poly in geo_array])
 
     pt_ids = np.repeat(id_array, counts)
 
-    pts = pygeos.get_coordinates(geo_array)
+    pts = shp.get_coordinates(geo_array)
 
     pts, pts_ix = np.unique(np.round(pts, rounding_decimals), axis=0, return_index=True)
     pt_ids = pt_ids[pts_ix]
@@ -735,8 +728,8 @@ def polys_to_vor_pts(regions, all_oc, tolerance=DENSIFY_TOLERANCE):
     regions : geopandas.GeoDataFrame
         GeoDataFrame defining region boundaries, with `UID` unique ID field
 
-    all_oc : pygeos.Geometry
-        List of pygeos Polygons corresponding to the "ocean" shapes in each
+    all_oc : list(shapely.Geometry)
+        List of Polygons corresponding to the "ocean" shapes in each
         grid cell. Ocean shapes should be defined as areas not covered by any
         geometry in the set of `regions`.
 
@@ -748,11 +741,11 @@ def polys_to_vor_pts(regions, all_oc, tolerance=DENSIFY_TOLERANCE):
     :py:class:`geopandas.GeoSeries`
         Resulting points derived from `regions` to use as Voronoi generators
     """
-    densified = pygeos.segmentize(pygeos.from_shapely(regions["geometry"]), tolerance)
+    densified = shp.segmentize(regions["geometry"], tolerance)
 
     pts, pt_gadm_ids = explode_gdf_to_pts(densified, regions.index.values)
 
-    all_oc_densified = pygeos.segmentize(all_oc, MARGIN_DIST)
+    all_oc_densified = shp.segmentize(all_oc, MARGIN_DIST)
 
     (
         coastal_coastal_pts,
@@ -780,23 +773,6 @@ def polys_to_vor_pts(regions, all_oc, tolerance=DENSIFY_TOLERANCE):
             crs=regions.crs,
         )
     )
-
-
-def make_valid_shapely(g):
-    """Wrapper to call `make_valid` on a list of Shapely geometries.
-    Should be deprecated upon release of Shapely 2.0.
-
-    Parameters
-    ----------
-    g : list-like
-        List of Shapely geometries or geopandas.GeoSeries
-
-    Returns
-    -------
-    list
-        List of Shapely geometries, after calling `pygeos.make_valid()` on all.
-    """
-    return pygeos.to_shapely(pygeos.make_valid(pygeos.from_shapely(g)))
 
 
 @jit(nopython=True, parallel=False)
@@ -940,11 +916,10 @@ def fix_ring_topology(reg_group_polys, reg_group_loc_ids):
         they surround other polygons.
 
     """
-    group_polys = pygeos.from_shapely(reg_group_polys)
 
-    tree = pygeos.STRtree(group_polys)
+    tree = shp.STRtree(reg_group_polys)
 
-    contains, contained = tree.query_bulk(group_polys, "contains_properly")
+    contains, contained = tree.query_bulk(reg_group_polys, "contains_properly")
 
     # Check that there are no rings inside rings. If there are, this function
     # And `get_groups_of_regions()` may need to be re-worked
@@ -952,14 +927,12 @@ def fix_ring_topology(reg_group_polys, reg_group_loc_ids):
 
     for container_ix in np.unique(contains):
 
-        reg_group_polys[container_ix] = pygeos.to_shapely(
-            pygeos.make_valid(
-                pygeos.polygons(
-                    pygeos.get_exterior_ring(group_polys[container_ix]),
-                    holes=pygeos.get_exterior_ring(
-                        group_polys[contained[contains == container_ix]]
-                    ),
-                )
+        reg_group_polys[container_ix] = shp.make_valid(
+            shp.polygons(
+                shp.get_exterior_ring(reg_group_polys[container_ix]),
+                holes=shp.get_exterior_ring(
+                    reg_group_polys[contained[contains == container_ix]]
+                ),
             )
         )
 
@@ -1411,7 +1384,7 @@ def get_polys_from_cycles(
             reg_polys = numba_divide_polys_by_meridians(
                 ensure_validity(poly_points_lon_lat)
             )
-            reg_polys = list(pygeos.to_shapely([pygeos.polygons(p) for p in reg_polys]))
+            reg_polys = [shp.polygons(p) for p in reg_polys]
 
         reg_group_polys += reg_polys
         reg_group_loc_ids += [loc for i in range(len(reg_polys))]
@@ -1501,7 +1474,7 @@ def get_spherical_voronoi_gser(pts, show_bar=True):
     # Based on testing and our use case, these are rare and small enough to ignore,
     # and correcting for this with smaller slerp sections too computationally
     # intensive, but improvements on this would be welcome.
-    polys = make_valid_shapely(polys)
+    polys = shp.make_valid(polys)
 
     return (
         gpd.GeoDataFrame({pts.index.name: loc_ids}, geometry=polys, crs="EPSG:4326")
@@ -1679,10 +1652,10 @@ def remove_already_attributed_land_from_vor(
 
     Parameters
     ----------
-    vor_shapes : array of pygeos.Geometry
+    vor_shapes : array of shapely.Geometry
         Shapes of globally comprehensive Voronoi regions
 
-    all_gridded : array of pygeos.Geometry
+    all_gridded : array of shapely.Geometry
         Shapes of original regions
 
     vor_ix : np.ndarray
@@ -1714,13 +1687,13 @@ def remove_already_attributed_land_from_vor(
         overlapping_ix = list(existing[(vor_ix == ix) & (gridded_uid != vor_uid)])
         if len(overlapping_ix) > 0:
             overlapping_land = itemgetter(*overlapping_ix)(all_gridded)
-            uu = pygeos.union_all(overlapping_land)
-            remaining = pygeos.difference(vor_shapes[ix], uu)
+            uu = shp.union_all(overlapping_land)
+            remaining = shp.difference(vor_shapes[ix], uu)
         else:
             remaining = vor_shapes[ix]
         calculated.append(remaining)
 
-    return gpd.GeoSeries(pygeos.to_shapely(calculated), crs=crs)
+    return gpd.GeoSeries(calculated, crs=crs)
 
 
 def get_voronoi_regions(full_regions):
@@ -1751,26 +1724,29 @@ def get_voronoi_regions(full_regions):
     print("...Creating Voronoi diagram from generator points")
     vor_gdf = get_spherical_voronoi_gser(pts).to_frame()
 
-    vor_shapes = pygeos.from_shapely(vor_gdf["geometry"])
     all_gridded = gridded_gdf["geometry"].values
 
-    tree = pygeos.STRtree(all_gridded)
+    tree = shp.STRtree(all_gridded)
 
-    vor_ix, existing = tree.query_bulk(vor_shapes, "intersects")
+    vor_ix, existing = tree.query_bulk(vor_gdf.geometry, "intersects")
 
     gridded_uid = np.take(gridded_gdf.index.values, existing)
     vor_uid = np.take(vor_gdf.index.values, vor_ix)
 
     print("...Removing already attributed land from voronoi")
-    vor_gdf["calculated"] = gpd.GeoSeries(remove_already_attributed_land_from_vor(
-        vor_shapes,
-        all_gridded,
-        vor_ix,
-        existing,
-        vor_uid,
-        gridded_uid,
-        crs=full_regions.crs,
-    ).values, crs=4326, index=vor_gdf.index)
+    vor_gdf["calculated"] = gpd.GeoSeries(
+        remove_already_attributed_land_from_vor(
+            vor_gdf.geometry,
+            all_gridded,
+            vor_ix,
+            existing,
+            vor_uid,
+            gridded_uid,
+            crs=full_regions.crs,
+        ).values,
+        crs=4326,
+        index=vor_gdf.index,
+    )
 
     print("...stitching Voronoi with already attributed land")
     full_regions = full_regions.join(vor_gdf.drop(columns="geometry"), how="left")
@@ -1792,7 +1768,7 @@ def get_voronoi_regions(full_regions):
 
 
 def get_points_along_segments(segments, tolerance=DENSIFY_TOLERANCE):
-    """Get a set of points along line segments. Calls `pygeos.segmentize()`
+    """Get a set of points along line segments. Calls `shapely.segmentize()`
     to interpolate between endpoints of each line segment.
 
     Parameters
@@ -1812,21 +1788,22 @@ def get_points_along_segments(segments, tolerance=DENSIFY_TOLERANCE):
     # avoiding GeoDataFrame.explode until geopandas v0.10.3 b/c of
     # https://github.com/geopandas/geopandas/issues/2271
     # segments = segments.explode(index_parts=False)
-    segments = gpd.GeoDataFrame(segments.drop(columns="geometry").join(
-        segments.geometry.explode(index_parts=False)
-    ), geometry="geometry")
+    segments = gpd.GeoDataFrame(
+        segments.drop(columns="geometry").join(
+            segments.geometry.explode(index_parts=False)
+        ),
+        geometry="geometry",
+    )
 
     segments = segments[~segments["geometry"].is_empty].copy()
 
     segments["geometry"] = gpd.GeoSeries(
-        pygeos.to_shapely(pygeos.segmentize(pygeos.from_shapely(segments.geometry), 0.01)),
+        shp.segmentize(segments.geometry, 0.01),
         crs=segments.crs,
-        index=segments.index
+        index=segments.index,
     )
 
-    pts, pts_ix = pygeos.get_coordinates(
-        pygeos.from_shapely(segments["geometry"]), return_index=True
-    )
+    pts, pts_ix = shp.get_coordinates(segments["geometry"], return_index=True)
 
     return gpd.GeoDataFrame(
         segments.drop(columns="geometry").iloc[pts_ix],
@@ -2170,13 +2147,11 @@ def simplify_coastlines(coastlines):
 
     """
 
-    coords, linestring_ix = pygeos.get_coordinates(
-        pygeos.from_shapely(coastlines.values), return_index=True
-    )
+    coords, linestring_ix = shp.get_coordinates(coastlines.values, return_index=True)
 
     start, end = coords[:-1], coords[1:]
 
-    tiny_segs = pygeos.linestrings(
+    tiny_segs = shp.linestrings(
         np.stack((start[:, 0], end[:, 0]), axis=1),
         np.stack((start[:, 1], end[:, 1]), axis=1),
     )
@@ -2186,7 +2161,9 @@ def simplify_coastlines(coastlines):
     linestring_ix = linestring_ix[:-1][linestring_ix[:-1] == linestring_ix[1:]]
 
     return gpd.GeoSeries(
-        pygeos.to_shapely(tiny_segs), crs=coastlines.crs, index=coastlines.iloc[linestring_ix].index
+        tiny_segs,
+        crs=coastlines.crs,
+        index=coastlines.iloc[linestring_ix].index,
     )
 
 
@@ -2216,11 +2193,9 @@ def join_coastlines_to_isos(coastlines, regions_voronoi):
     # Use regions as a proxy for countries. It's faster because the regions are more
     # narrowly located than the countries in the STRtree, but could instead subdivide
     # countries
-    tree = pygeos.STRtree(pygeos.from_shapely(regions["geometry"]))
+    tree = shp.STRtree(regions["geometry"])
 
-    coastal_ix, region_ix = tree.query_bulk(
-        pygeos.from_shapely(coastlines), "intersects"
-    )
+    coastal_ix, region_ix = tree.query_bulk(coastlines, "intersects")
 
     coastal_geo = coastlines.iloc[coastal_ix]
     regions_out = regions.iloc[region_ix]
@@ -2281,9 +2256,7 @@ def get_coastlines_by_iso(coastlines, regions_voronoi, plot=True):
     # Check output
     if plot:
         tmp = out.reset_index(drop=False)
-        tmp.plot(
-            color=add_rand_color(tmp, col="ISO"), figsize=(20, 20)
-        )
+        tmp.plot(color=add_rand_color(tmp, col="ISO"), figsize=(20, 20))
 
     return out
 
@@ -2663,6 +2636,7 @@ def interpolate_da_like(da_in, da_out):
     # installation issues on remote dask workers. By installing it here, the rest of
     # sliiders can be installed without pyinterp
     from pyinterp.backends.xarray import Grid2D
+
     xx, yy = np.meshgrid(da_out.lon.values, da_out.lat.values)
     interpolator = Grid2D(da_in, geodetic=True)
     interp_out = interpolator.bicubic(coords={"lon": xx.flatten(), "lat": yy.flatten()})
