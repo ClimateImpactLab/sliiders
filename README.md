@@ -65,6 +65,10 @@ Please file an issue for any problems you encounter.
 
 We encourage community contributions. At the moment, we have no contribution template. Please fork the project and file a Merge Request to propose your addition. Clearly define the contribution that the Merge Request is making and, when any issues have been resolved, we will merge the new code.
 
+## A note on vertical datums
+
+All elevations in SLIIDERS are estimated relative to local mean sea level in the 1993-2012 period. More precisely, topography was taken from the [CoastalDEM v2.1](https://assets.ctfassets.net/cxgxgstp8r5d/3f1LzJSnp7ZjFD4loDYnrA/71eaba2b8f8d642dd9a7e6581dce0c66/CoastalDEM_2.1_Scientific_Report_.pdf) digital elevation model, which is based on data from the [Shuttle Radar Topography Mission (SRTM)](https://www.jpl.nasa.gov/missions/shuttle-radar-topography-mission-srtm/) and is thus relative to the EGM96 geoid. The [AVISO+ MDT-CNES-CLS18](https://os.copernicus.org/articles/17/789/2021/) product is used to determine the mean dynamic topography relative to a geoid ([GOCO05s](https://meetingorganizer.copernicus.org/egu2015/egu2015-12364.pdf)). The MDT relative to a geoid is extrapolated inland to obtain a theoretical MDT over land and then subtracted from the CoastalDEM elevation to obtain the height above local mean sea level (in the reference period). Conversion between the two geoids (EGM96 and GOCO05s) was avoided due to sinusoidal artifacts that occurred in the resulting elevations after adding in the difference. This "rippled" effect likely occurs due to the different order of models used to define these geoid surfaces combined with satellite data postprocessing on the MDT and CoastalDEM products. Thus, an implicit assumption is made about the equivalence of the two geoid models. For further details on this process, see the notebooks [05-generate-datum-conversion-grid.ipynb](notebooks/data-processing/2-present-day-exposure/05-generate-datum-conversion-grid.ipynb) and [06-create-dem-mss.ipynb](notebooks/data-processing/2-present-day-exposure/06-create-dem-mss.ipynb).
+
 ## Authors
 
 The original authors of this code include:
